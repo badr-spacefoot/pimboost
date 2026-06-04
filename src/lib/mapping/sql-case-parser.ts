@@ -142,7 +142,7 @@ function toMapping(sourceName: string, attributeName: string, targetValue: strin
     conditions,
     ruleType: 'contextual',
     confidenceScore: 1,
-    status: 'validated',
+    status: 'detected',
   };
 }
 

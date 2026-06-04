@@ -247,3 +247,44 @@ La preview SQL affiche désormais **Target Value | Conditions | Status**. Les co
 Les tables `mapping_rules` et `mapping_rule_conditions` permettent de persister ces règles avec `rule_type = contextual`, une priorité, un statut et leurs conditions détaillées.
 
 Le moteur peut aussi être appelé via `POST /api/contextual-suggestions` avec un `record` JSON. Il évalue toutes les conditions avant de proposer une cible, par exemple `model_category = Pants` ET `model_description ~* Chino` retourne `Pantalon chino`, tandis que `model_category = Shorts` ET `model_description ~* Chino` retourne `Short chino`.
+
+## UX de validation des mappings importés
+
+Le workflow principal est organisé en 8 étapes :
+
+1. **Source & Attribute** : choix de `source_name`, `brand`, `attribute_name`, `source_path` principal et type de mapping (`one_to_one`, `sql_case`, `contextual`).
+2. **Upload Data** : import CSV/JSON produit, preview et sélection du champ source à analyser.
+3. **Import Mapping Knowledge** : import one-to-one CSV/JSON ou collage d’un SQL `CASE WHEN` avec parser dédié.
+4. **Mapping Review & Validation** : toutes les règles détectées passent par un tableau de validation humaine avant toute sauvegarde.
+5. **Distinct Values Coverage** : affiche la couverture des données uploadées par les règles validées, les valeurs manquantes et les ratings de mots-clés.
+6. **Rule Builder** : génère un SQL `CASE WHEN` uniquement à partir des mappings `validated`.
+7. **Rule Tester** : applique uniquement les règles validées aux données importées.
+8. **Save / Export** : sauvegarde knowledge base et exports CSV/JSON/SQL limités aux mappings validés.
+
+Les imports SQL `CASE WHEN` ne sont jamais ajoutés automatiquement à `mapping_knowledge_base`. Le parser ajoute les lignes en statut `detected`; l’utilisateur doit ensuite choisir **Valider**, **Rejeter**, **Ignorer**, modifier la cible, ou marquer la règle comme **Contextuel**.
+
+## Keyword rating et context_signature
+
+La table `keyword_stats` stocke les statistiques de mots-clés par source, attribut, cible et contexte :
+
+- `keyword` / `keyword_normalized` ;
+- `attribute_name` / `source_name` ;
+- `target_value` ;
+- `context_signature`, par exemple `raw_data.model_category=PANTS|raw_data.model_description~*CHINO` ;
+- `validation_count`, `rejection_count`, `source_count`, `confidence_score`, `last_used_at`.
+
+Le moteur de rating détecte les mots-clés contextuels. Exemple : si `CHINO` mène à `Pantalon chino`, `Short chino` et `Jupe chino` selon `model_category`, le niveau de fiabilité devient `context_required` et l’interface affiche que le mot-clé ne doit pas être proposé seul.
+
+Le système de conflits compare désormais la signature complète du contexte. Ces lignes ne sont pas en conflit :
+
+```text
+model_category = Pants AND model_description ~* Chino => Pantalon chino
+model_category = Shorts AND model_description ~* Chino => Short chino
+```
+
+Ces lignes sont un vrai conflit :
+
+```text
+model_category = Pants AND model_description ~* Chino => Pantalon chino
+model_category = Pants AND model_description ~* Chino => Short chino
+```

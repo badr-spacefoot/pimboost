@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { normalizeText } from '@/lib/mapping/normalize';
+import { extractKeyword } from '@/lib/mapping/keyword-stats';
+import { conditionSignature } from '@/lib/mapping/rule-execution';
 import type { KnowledgeBaseMappingInput } from '@/lib/types/mapping';
 
 export async function GET(request: Request) {
@@ -25,7 +27,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   const body = (await request.json()) as { mappings?: KnowledgeBaseMappingInput[] };
-  const mappings = (body.mappings ?? []).filter((mapping) => mapping.attributeName && mapping.sourceValue && mapping.targetValue);
+  const mappings = (body.mappings ?? []).filter((mapping) => mapping.status === 'validated' && mapping.attributeName && mapping.sourceValue && mapping.targetValue);
 
   try {
     const saved = [];
@@ -51,7 +53,7 @@ export async function POST(request: Request) {
           brand: mapping.brand,
           gender: mapping.gender,
           confidenceScore: mapping.confidenceScore ?? 1,
-          status: mapping.status ?? 'validated',
+          status: 'validated',
           validationCount: { increment: 1 },
         },
         create: {
@@ -70,7 +72,7 @@ export async function POST(request: Request) {
           brand: mapping.brand,
           gender: mapping.gender,
           confidenceScore: mapping.confidenceScore ?? 1,
-          status: mapping.status ?? 'validated',
+          status: 'validated',
           validationCount: 1,
         },
       });
@@ -87,7 +89,7 @@ export async function POST(request: Request) {
             ruleType: mapping.ruleType ?? 'contextual',
             priority: 50,
             confidenceScore: mapping.confidenceScore ?? 1,
-            status: mapping.status ?? 'validated',
+            status: 'validated',
             conditions: {
               create: mapping.conditions.map((condition, index) => ({
                 sourcePath: condition.sourcePath,
@@ -113,6 +115,36 @@ export async function POST(request: Request) {
           sourceValueNormalized: normalizeText(mapping.sourceValue),
           targetValue: mapping.targetValue,
           usageCount: 1,
+        },
+      });
+
+      const keyword = extractKeyword(mapping);
+      await prisma.keywordStat.upsert({
+        where: {
+          keyword_context_target_unique: {
+            keywordNormalized: normalizeText(keyword),
+            attributeName: mapping.attributeName,
+            sourceName: mapping.sourceName ?? '*',
+            targetValue: mapping.targetValue,
+            contextSignature: conditionSignature(mapping.conditions ?? []) || 'direct',
+          },
+        },
+        update: {
+          validationCount: { increment: 1 },
+          confidenceScore: mapping.confidenceScore ?? 1,
+          lastUsedAt: new Date(),
+        },
+        create: {
+          keyword,
+          keywordNormalized: normalizeText(keyword),
+          attributeName: mapping.attributeName,
+          sourceName: mapping.sourceName ?? '*',
+          targetValue: mapping.targetValue,
+          contextSignature: conditionSignature(mapping.conditions ?? []) || 'direct',
+          validationCount: 1,
+          rejectionCount: 0,
+          sourceCount: 1,
+          confidenceScore: mapping.confidenceScore ?? 1,
         },
       });
     }

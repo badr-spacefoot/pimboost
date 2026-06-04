@@ -9,6 +9,8 @@ import { getDistinctValues } from '@/lib/mapping/distinct';
 import { flattenFieldPaths } from '@/lib/mapping/paths';
 import { parseSourceFile } from '@/lib/mapping/parser';
 import { buildKnowledgeBasePreview, exportKnowledgeBaseCsv, exportKnowledgeBaseJson, exportKnowledgeBaseSql, parseKnowledgeBaseFile } from '@/lib/mapping/knowledge-base';
+import { buildKeywordStats } from '@/lib/mapping/keyword-stats';
+import { generateSqlFromKnowledgeRows, testKnowledgeRows, validatedKnowledgeRows, conditionsToHumanLabel } from '@/lib/mapping/rule-execution';
 import { containsSqlCaseSyntax, parseSqlCaseMappings } from '@/lib/mapping/sql-case-parser';
 import { generateCaseWhenSql } from '@/lib/mapping/sql';
 import { detectSourceTypologies, parseManualMappings } from '@/lib/mapping/source-profile';
@@ -22,6 +24,8 @@ const DEFAULT_ATTRIBUTE_NAMES = ['family', 'size', 'color', 'season', 'gender', 
 export default function Home() {
   const [records, setRecords] = useState<SourceRecord[]>([]);
   const [sourceName, setSourceName] = useState('');
+  const [brandName, setBrandName] = useState('');
+  const [mappingType, setMappingType] = useState<'one_to_one' | 'sql_case' | 'contextual'>('one_to_one');
   const [fieldPath, setFieldPath] = useState('');
   const [rows, setRows] = useState<MappingRow[]>([]);
   const [query, setQuery] = useState('');
@@ -49,10 +53,12 @@ export default function Home() {
   const fields = useMemo(() => flattenFieldPaths(records), [records]);
   const detectedTypologies = useMemo(() => detectSourceTypologies(records), [records]);
   const sourceExpression = fields.find((field) => field.label === fieldPath)?.sqlExpression ?? fieldPath;
+  const keywordStats = useMemo(() => buildKeywordStats(knowledgeBaseRows), [knowledgeBaseRows]);
+  const validatedReviewRows = useMemo(() => validatedKnowledgeRows(knowledgeBaseRows), [knowledgeBaseRows]);
   const rules: MappingRuleInput[] = useMemo(
     () =>
       rows
-        .filter((row) => row.targetValue.trim())
+        .filter((row) => row.status === 'validated' && row.targetValue.trim())
         .map((row) => ({
           sourceValue: row.value,
           targetValue: row.targetValue,
@@ -62,10 +68,20 @@ export default function Home() {
         })),
     [rows],
   );
-  const generatedRule = useMemo(() => generateCaseWhenSql(sourceExpression || 'raw_data', rules), [sourceExpression, rules]);
-  const testResult = useMemo(() => testRules(records, fieldPath, rules), [records, fieldPath, rules]);
+  const generatedRule = useMemo(() => {
+    if (validatedReviewRows.length) return { sql: generateSqlFromKnowledgeRows(validatedReviewRows, sourceExpression || 'raw_data'), clauses: [] };
+    return generateCaseWhenSql(sourceExpression || 'raw_data', rules);
+  }, [sourceExpression, rules, validatedReviewRows]);
+  const testResult = useMemo(() => (validatedReviewRows.length ? testKnowledgeRows(records, validatedReviewRows, fieldPath) : testRules(records, fieldPath, rules)), [records, fieldPath, rules, validatedReviewRows]);
+  const coverageAfterValidation = useMemo(() => testKnowledgeRows(records, validatedReviewRows, fieldPath), [records, fieldPath, validatedReviewRows]);
   const knownAttributeNames = useMemo(() => Array.from(new Set([...DEFAULT_ATTRIBUTE_NAMES, ...fields.map((field) => field.label), fieldPath, manualAttributeName].filter(Boolean))).sort((a, b) => a.localeCompare(b)), [fields, fieldPath, manualAttributeName]);
   const canAddManualMappings = Boolean(sourceName.trim() && manualAttributeName.trim());
+  const reviewCounts = useMemo(() => ({
+    validated: knowledgeBaseRows.filter((row) => row.status === 'validated').length,
+    rejected: knowledgeBaseRows.filter((row) => row.status === 'rejected').length,
+    ignored: knowledgeBaseRows.filter((row) => row.status === 'ignored').length,
+    needsContext: knowledgeBaseRows.filter((row) => row.status === 'needs_context').length,
+  }), [knowledgeBaseRows]);
 
   useEffect(() => {
     async function loadKnownSources() {
@@ -212,8 +228,9 @@ export default function Home() {
       attributeName: mapping.attributeName,
       sourceValue: mapping.sourceValueNormalized,
       targetValue: mapping.targetValue,
+      brand: brandName.trim() || undefined,
       confidenceScore: 1,
-      status: 'validated' as const,
+      status: 'detected' as const,
     }));
     setKnownSourceNames((current) => Array.from(new Set([...current, sourceName.trim()])).sort((a, b) => a.localeCompare(b)));
     setKnowledgeBaseRows((current) => [...manualKnowledgeBaseRows, ...current]);
@@ -241,10 +258,11 @@ export default function Home() {
       return;
     }
 
-    setKnowledgeBaseRows((current) => [...sqlCasePreview.mappings, ...current]);
-    setKnowledgeBasePreview(buildKnowledgeBasePreview([...sqlCasePreview.mappings, ...knowledgeBaseRows]));
-    setTargetValues((current) => Array.from(new Set([...current, ...sqlCasePreview.mappings.map((mapping) => mapping.targetValue)])).sort((a, b) => a.localeCompare(b)));
-    setSqlCaseMessage(`${sqlCasePreview.mappings.length} mapping(s) ajoutés au preview knowledge base. Validez puis sauvegardez.`);
+    const enrichedMappings = sqlCasePreview.mappings.map((mapping) => ({ ...mapping, brand: brandName.trim() || mapping.brand }));
+    setKnowledgeBaseRows((current) => [...enrichedMappings, ...current]);
+    setKnowledgeBasePreview(buildKnowledgeBasePreview([...enrichedMappings, ...knowledgeBaseRows]));
+    setTargetValues((current) => Array.from(new Set([...current, ...enrichedMappings.map((mapping) => mapping.targetValue)])).sort((a, b) => a.localeCompare(b)));
+    setSqlCaseMessage(`${sqlCasePreview.mappings.length} mapping(s) ajoutés à Mapping Review & Validation. Validez ou rejetez chaque ligne avant sauvegarde.`);
   }
 
   function dedupeSuggestionMemory(entries: SuggestionMemoryEntry[]) {
@@ -259,7 +277,7 @@ export default function Home() {
 
   async function importKnowledgeBaseFile(file: File) {
     try {
-      const importedRows = await parseKnowledgeBaseFile(file);
+      const importedRows = (await parseKnowledgeBaseFile(file)).map((row) => ({ ...row, status: row.status === 'rejected' ? 'rejected' as const : 'detected' as const }));
       setKnowledgeBaseRows(importedRows);
       const localPreview = buildKnowledgeBasePreview(importedRows);
       setKnowledgeBasePreview(localPreview);
@@ -285,7 +303,7 @@ export default function Home() {
   }
 
   async function saveKnowledgeBaseRows() {
-    const validRows = knowledgeBaseRows.filter((row) => row.attributeName && row.sourceValue && row.targetValue && row.status !== 'rejected');
+    const validRows = knowledgeBaseRows.filter((row) => row.attributeName && row.sourceValue && row.targetValue && row.status === 'validated');
     const response = await fetch('/api/knowledge-base', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -315,7 +333,7 @@ export default function Home() {
   }
 
   function downloadExport() {
-    const scopedRows = knowledgeBaseRows.length ? knowledgeBaseRows : rules.map((rule) => ({
+    const scopedRows = validatedReviewRows.length ? validatedReviewRows : rules.map((rule) => ({
       sourceName,
       attributeName: fieldPath,
       sourceValue: rule.sourceValue,
@@ -363,12 +381,41 @@ export default function Home() {
         </p>
       </header>
 
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-2xl font-bold">1. Source & Attribute</h2>
+        <p className="mt-2 text-sm text-slate-500">Définissez le contexte avant d’uploader ou d’importer des mappings. Les suggestions futures priorisent cette source, cet attribut et ce chemin.</p>
+        <div className="mt-4 grid gap-4 md:grid-cols-5">
+          <label className="text-sm font-semibold text-slate-700">Source Name
+            <input list="known-source-names" value={sourceName} onChange={(event) => renameSource(event.target.value)} placeholder="Nike B2B" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+          </label>
+          <label className="text-sm font-semibold text-slate-700">Brand
+            <input value={brandName} onChange={(event) => setBrandName(event.target.value)} placeholder="Puma" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+          </label>
+          <label className="text-sm font-semibold text-slate-700">Attribute Name
+            <input list="known-attribute-names" value={manualAttributeName} onChange={(event) => renameManualAttribute(event.target.value)} placeholder="family" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+          </label>
+          <label className="text-sm font-semibold text-slate-700">Source Path principal
+            <select value={fieldPath} onChange={async (event) => { setFieldPath(event.target.value); const memory = await loadSuggestionMemory(event.target.value, sourceName); rebuildRows(records, event.target.value, memory, sourceName); }} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
+              <option value="">Choisir après upload</option>
+              {fields.map((field) => <option key={field.label} value={field.label}>{field.label}</option>)}
+            </select>
+          </label>
+          <label className="text-sm font-semibold text-slate-700">Type de mapping
+            <select value={mappingType} onChange={(event) => setMappingType(event.target.value as typeof mappingType)} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
+              <option value="one_to_one">One-to-one</option>
+              <option value="sql_case">SQL CASE</option>
+              <option value="contextual">Contextual Rules</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
       <section className="grid gap-6 lg:grid-cols-[380px_1fr]">
         <div className="space-y-6">
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex items-center gap-3">
               <FileJson className="text-pimup-700" />
-              <h2 className="text-xl font-semibold">1. Upload source</h2>
+              <h2 className="text-xl font-semibold">2. Upload Data</h2>
             </div>
             <input
               type="file"
@@ -410,7 +457,7 @@ export default function Home() {
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-xl font-semibold">2. Champ source</h2>
+            <h2 className="text-xl font-semibold">Source Path à analyser</h2>
             <select
               value={fieldPath}
               onChange={async (event) => {
@@ -430,7 +477,7 @@ export default function Home() {
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-xl font-semibold">3. Éditeur de mappings existants</h2>
+            <h2 className="text-xl font-semibold">3. Import Mapping Knowledge</h2>
             <p className="mt-2 text-sm text-slate-500">
               Ajoutez des mappings connus pour une source et un attribut. Ils seront associés à cette source puis utilisés en priorité dans les suggestions futures.
             </p>
@@ -673,39 +720,77 @@ export default function Home() {
               </div>
             )}
           {knowledgeBaseRows.length > 0 && (
-            <div className="mt-4 max-h-80 overflow-auto rounded-xl border border-slate-200">
+            <div className="mt-6 space-y-4">
+              <div>
+                <h2 className="text-2xl font-bold">4. Mapping Review & Validation</h2>
+                <p className="text-sm text-slate-500">Aucun import SQL n’est sauvegardé automatiquement : validez, rejetez, modifiez ou ignorez chaque mapping avant knowledge base.</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
+                <StatCard label="Validées" value={reviewCounts.validated} tone="success" />
+                <StatCard label="Rejetées" value={reviewCounts.rejected} tone="warning" />
+                <StatCard label="Ignorées" value={reviewCounts.ignored} />
+                <StatCard label="Needs context" value={reviewCounts.needsContext} tone="warning" />
+                <StatCard label="Règles incluses" value={validatedReviewRows.length || rules.length} />
+                <StatCard label="Mots-clés scorés" value={keywordStats.length} />
+              </div>
+            <div className="max-h-96 overflow-auto rounded-xl border border-slate-200">
               <table className="min-w-full text-xs">
                 <thead className="sticky top-0 bg-slate-50 text-left uppercase text-slate-500">
                   <tr>
-                    <th className="px-3 py-2">source</th>
-                    <th className="px-3 py-2">attribute</th>
-                    <th className="px-3 py-2">source_value</th>
-                    <th className="px-3 py-2">target_value</th>
-                    <th className="px-3 py-2">status</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Conditions</th>
+                    <th className="px-3 py-2">Keyword</th>
+                    <th className="px-3 py-2">Target proposée</th>
+                    <th className="px-3 py-2">Score</th>
+                    <th className="px-3 py-2">Raison</th>
+                    <th className="px-3 py-2">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {knowledgeBaseRows.slice(0, 50).map((row, index) => (
-                    <tr key={`${row.sourceName}-${row.attributeName}-${row.sourceValue}-${index}`}>
-                      <td className="px-3 py-2"><input value={row.sourceName ?? ''} onChange={(event) => updateKnowledgeBaseRow(index, { sourceName: event.target.value })} className="w-32 rounded border border-slate-200 px-2 py-1" /></td>
-                      <td className="px-3 py-2"><input value={row.attributeName} onChange={(event) => updateKnowledgeBaseRow(index, { attributeName: event.target.value })} className="w-28 rounded border border-slate-200 px-2 py-1" /></td>
-                      <td className="px-3 py-2"><input value={row.sourceValue} onChange={(event) => updateKnowledgeBaseRow(index, { sourceValue: event.target.value })} className="w-36 rounded border border-slate-200 px-2 py-1" /></td>
-                      <td className="px-3 py-2"><input list="target-values" value={row.targetValue} onChange={(event) => updateKnowledgeBaseRow(index, { targetValue: event.target.value })} className="w-48 rounded border border-slate-200 px-2 py-1" /></td>
-                      <td className="px-3 py-2">
-                        <select value={row.status ?? 'validated'} onChange={(event) => updateKnowledgeBaseRow(index, { status: event.target.value as KnowledgeBaseMappingInput['status'] })} className="rounded border border-slate-200 px-2 py-1">
-                          <option value="validated">validated</option>
-                          <option value="draft">draft</option>
-                          <option value="rejected">ignore</option>
-                        </select>
-                      </td>
-                    </tr>
-                  ))}
+                  {knowledgeBaseRows.slice(0, 80).map((row, index) => {
+                    const keywordStat = keywordStats.find((stat) => stat.keywordNormalized === row.sourceValue.toUpperCase() || row.sourceValue.toUpperCase().includes(stat.keywordNormalized));
+                    const conditionLabel = row.conditions?.length ? conditionsToHumanLabel(row.conditions) : row.sourcePath ? `${row.sourcePath} ${row.matcherType ?? 'exact'} ${row.sourceValue}` : row.sourceValue;
+                    return (
+                      <tr key={`${row.sourceName}-${row.attributeName}-${row.sourceValue}-${index}`}>
+                        <td className="px-3 py-2">
+                          <select value={row.status ?? 'detected'} onChange={(event) => updateKnowledgeBaseRow(index, { status: event.target.value as KnowledgeBaseMappingInput['status'] })} className="rounded border border-slate-200 px-2 py-1">
+                            <option value="detected">detected</option>
+                            <option value="suggested">suggested</option>
+                            <option value="validated">validated</option>
+                            <option value="rejected">rejected</option>
+                            <option value="ignored">ignored</option>
+                            <option value="conflict">conflict</option>
+                            <option value="needs_context">needs_context</option>
+                          </select>
+                        </td>
+                        <td className="min-w-64 px-3 py-2 text-slate-700">{conditionLabel}</td>
+                        <td className="px-3 py-2"><input value={row.sourceValue} onChange={(event) => updateKnowledgeBaseRow(index, { sourceValue: event.target.value })} className="w-48 rounded border border-slate-200 px-2 py-1" /></td>
+                        <td className="px-3 py-2"><input list="target-values" value={row.targetValue} onChange={(event) => updateKnowledgeBaseRow(index, { targetValue: event.target.value, status: 'suggested' })} className="w-52 rounded border border-slate-200 px-2 py-1" /></td>
+                        <td className="px-3 py-2">{Math.round((keywordStat?.confidenceScore ?? row.confidenceScore ?? 0.75) * 100)}%</td>
+                        <td className="min-w-48 px-3 py-2 text-slate-500">{keywordStat?.reason ?? (row.conditions?.length ? 'Règle contextuelle détectée depuis SQL CASE.' : 'Mapping one-to-one détecté.')}</td>
+                        <td className="px-3 py-2">
+                          <div className="flex flex-wrap gap-1">
+                            <button type="button" onClick={() => updateKnowledgeBaseRow(index, { status: 'validated' })} className="rounded bg-emerald-100 px-2 py-1 font-semibold text-emerald-700">Valider</button>
+                            <button type="button" onClick={() => updateKnowledgeBaseRow(index, { status: 'rejected' })} className="rounded bg-rose-100 px-2 py-1 font-semibold text-rose-700">Rejeter</button>
+                            <button type="button" onClick={() => updateKnowledgeBaseRow(index, { status: 'ignored' })} className="rounded bg-slate-100 px-2 py-1 font-semibold text-slate-600">Ignorer</button>
+                            <button type="button" onClick={() => updateKnowledgeBaseRow(index, { status: 'needs_context', ruleType: 'contextual' })} className="rounded bg-amber-100 px-2 py-1 font-semibold text-amber-700">Contextuel</button>
+                            <button type="button" onClick={() => updateKnowledgeBaseRow(index, { status: 'rejected', rejectionCount: (row.rejectionCount ?? 0) + 1, reason: 'never_suggest' })} className="rounded bg-rose-50 px-2 py-1 font-semibold text-rose-800">Ne jamais reproposer</button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
+            </div>
           )}
+          <div className="mt-6">
+            <h2 className="text-2xl font-bold">8. Save / Export</h2>
+            <p className="mt-1 text-sm text-slate-500">Seuls les mappings validés sont sauvegardés ou exportés.</p>
+          </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <button type="button" onClick={saveKnowledgeBaseRows} disabled={!knowledgeBaseRows.length} className="rounded-xl bg-pimup-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-300">
+            <button type="button" onClick={saveKnowledgeBaseRows} disabled={!validatedReviewRows.length} className="rounded-xl bg-pimup-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-300">
               Sauvegarder dans mapping_knowledge_base
             </button>
             <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as 'csv' | 'json' | 'sql')} className="rounded-xl border border-slate-300 px-3 py-2 text-sm">
@@ -723,14 +808,41 @@ export default function Home() {
       <section className="space-y-4">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h2 className="text-2xl font-bold">4. Mapping des valeurs distinctes</h2>
-            <p className="text-slate-500">Suggestions issues de la mémoire validée, similarité texte et mots-clés.</p>
+            <h2 className="text-2xl font-bold">5. Distinct Values Coverage</h2>
+            <p className="text-slate-500">Coverage après validation, mappings trouvés/manquants, rating des mots-clés et suggestions IA.</p>
           </div>
           <div className="flex gap-2">
             <input value={bulkTarget} onChange={(event) => setBulkTarget(event.target.value)} placeholder="Valeur cible bulk" className="rounded-xl border border-slate-300 px-4 py-2" />
             <button onClick={applyBulk} className="rounded-xl bg-slate-900 px-4 py-2 font-semibold text-white">Mapper sélection</button>
           </div>
         </div>
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-6">
+          <StatCard label="Total produits" value={coverageAfterValidation.total} />
+          <StatCard label="Couverts validés" value={coverageAfterValidation.matched} tone="success" />
+          <StatCard label="Non couverts" value={coverageAfterValidation.unmatched} tone="warning" />
+          <StatCard label="Règles validées" value={reviewCounts.validated} />
+          <StatCard label="Rejetées" value={reviewCounts.rejected} tone="warning" />
+          <StatCard label="Contexte requis" value={reviewCounts.needsContext} tone="warning" />
+        </div>
+        {keywordStats.length > 0 && (
+          <div className="overflow-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <table className="min-w-full text-xs">
+              <thead className="bg-slate-50 text-left uppercase text-slate-500"><tr><th className="px-3 py-2">Keyword</th><th className="px-3 py-2">Validé/Rejeté</th><th className="px-3 py-2">Score</th><th className="px-3 py-2">Sources</th><th className="px-3 py-2">Targets connues</th><th className="px-3 py-2">Fiabilité</th></tr></thead>
+              <tbody className="divide-y divide-slate-100">
+                {keywordStats.slice(0, 12).map((stat) => (
+                  <tr key={`${stat.attributeName}-${stat.keywordNormalized}`}>
+                    <td className="px-3 py-2 font-semibold">{stat.keyword}</td>
+                    <td className="px-3 py-2">{stat.validationCount} / {stat.rejectionCount}</td>
+                    <td className="px-3 py-2">{Math.round(stat.confidenceScore * 100)}%</td>
+                    <td className="px-3 py-2">{stat.sourceCount}</td>
+                    <td className="px-3 py-2">{stat.targets.map((target) => `${target.targetValue}: ${target.count}`).join(' · ')}</td>
+                    <td className="px-3 py-2">{stat.reliability === 'context_required' ? 'Mot-clé contextuel : nécessite une condition parent.' : stat.reliability}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
         <MappingTable
           rows={rows}
           query={query}
@@ -751,14 +863,15 @@ export default function Home() {
         <div className="space-y-4">
           <div className="flex items-center gap-3">
             <Sparkles className="text-pimup-700" />
-            <h2 className="text-2xl font-bold">5. Rule Builder</h2>
+            <h2 className="text-2xl font-bold">6. Rule Builder</h2>
           </div>
+          <p className="text-sm text-slate-500">{validatedReviewRows.length || rules.length} règle(s) incluses. Les mappings rejetés ou ignorés ne sont pas générés.</p>
           <SqlPreview sql={generatedRule.sql} />
         </div>
         <div className="space-y-4">
           <div className="flex items-center gap-3">
             <Database className="text-pimup-700" />
-            <h2 className="text-2xl font-bold">6. Rule Tester</h2>
+            <h2 className="text-2xl font-bold">7. Rule Tester</h2>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <StatCard label="Total produits" value={testResult.total} />

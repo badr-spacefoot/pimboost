@@ -1,6 +1,7 @@
 import Papa from 'papaparse';
 import { normalizeText } from './normalize';
 import { generateCaseWhenSql } from './sql';
+import { generateSqlFromKnowledgeRows } from './rule-execution';
 import type { KnowledgeBaseImportPreview, KnowledgeBaseMappingInput, MappingCondition, MappingRuleInput } from '@/lib/types/mapping';
 
 const REQUIRED_COLUMNS = ['attribute_name', 'source_value', 'target_value'];
@@ -41,7 +42,7 @@ export function normalizeKnowledgeBaseRow(row: Record<string, unknown>): Knowled
     brand: optionalString(row.brand),
     gender: optionalString(row.gender),
     confidenceScore: numberValue(row.confidence_score, 1),
-    status: row.status === 'draft' || row.status === 'rejected' ? row.status : 'validated',
+    status: ['detected', 'suggested', 'validated', 'rejected', 'ignored', 'conflict', 'needs_context', 'draft'].includes(String(row.status)) ? row.status as KnowledgeBaseMappingInput['status'] : 'validated',
   };
 }
 
@@ -62,12 +63,12 @@ export function buildKnowledgeBasePreview(
 
     if (rows.findIndex((candidate) => knowledgeBaseKey(candidate) === rowKey) !== index) duplicates.add(rowKey);
     if (previousTarget && previousTarget !== row.targetValue) {
-      conflicts.push({ index, sourceValue: row.sourceValue, attributeName: row.attributeName, existingTargetValue: previousTarget, importedTargetValue: row.targetValue });
+      conflicts.push({ index, sourceValue: row.sourceValue, attributeName: row.attributeName, conditions: row.conditions, existingTargetValue: previousTarget, importedTargetValue: row.targetValue });
     } else {
       firstTargetByContext.set(conflictKey, row.targetValue);
     }
     if (existing && existing.targetValue !== row.targetValue) {
-      conflicts.push({ index, sourceValue: row.sourceValue, attributeName: row.attributeName, existingTargetValue: existing.targetValue, importedTargetValue: row.targetValue });
+      conflicts.push({ index, sourceValue: row.sourceValue, attributeName: row.attributeName, conditions: row.conditions, existingTargetValue: existing.targetValue, importedTargetValue: row.targetValue });
     }
 
     return { row, errors, duplicate: duplicates.has(rowKey), existing: Boolean(existing) };
@@ -110,8 +111,10 @@ export function exportKnowledgeBaseJson(rows: KnowledgeBaseMappingInput[]): stri
 }
 
 export function exportKnowledgeBaseSql(rows: KnowledgeBaseMappingInput[], sourceExpression: string): string {
+  const contextualRows = rows.filter((row) => row.conditions?.length || row.status === 'validated');
+  if (contextualRows.some((row) => row.conditions?.length)) return generateSqlFromKnowledgeRows(contextualRows, sourceExpression);
   const rules: MappingRuleInput[] = rows
-    .filter((row) => row.sourceValue && row.targetValue)
+    .filter((row) => row.status === 'validated' && row.sourceValue && row.targetValue)
     .map((row) => ({ sourceValue: row.sourceValue, targetValue: row.targetValue, matcherType: row.matcherType ?? 'contains', confidenceScore: row.confidenceScore ?? 1, status: 'validated' }));
   return generateCaseWhenSql(sourceExpression, rules).sql;
 }

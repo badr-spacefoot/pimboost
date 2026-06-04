@@ -1,6 +1,6 @@
 export type SourceRecord = Record<string, unknown>;
 
-export type MappingStatus = 'unmapped' | 'suggested' | 'validated';
+export type MappingStatus = 'unmapped' | 'detected' | 'suggested' | 'validated' | 'rejected' | 'ignored' | 'conflict' | 'needs_context';
 export type MatcherType = 'exact' | 'regex' | 'contains';
 export type MappingRuleType = 'one_to_one' | 'contextual' | 'regex' | 'sql_case';
 export type MappingConditionOperator = '=' | '~*' | 'IN' | 'contains';
@@ -88,8 +88,10 @@ export interface KnowledgeBaseMappingInput {
   brand?: string;
   gender?: string;
   confidenceScore?: number;
-  status?: 'draft' | 'validated' | 'rejected';
+  status?: MappingStatus | 'draft';
   validationCount?: number;
+  rejectionCount?: number;
+  reason?: string;
 }
 
 export interface KnowledgeBaseImportPreview {
@@ -125,6 +127,29 @@ export interface SqlCaseParsePreview {
   debugCases: string[];
 }
 
+
+export interface KeywordTargetStat {
+  targetValue: string;
+  count: number;
+}
+
+export interface KeywordStatSummary {
+  keyword: string;
+  keywordNormalized: string;
+  attributeName: string;
+  sourceName?: string;
+  contextSignature?: string;
+  validationCount: number;
+  rejectionCount: number;
+  sourceCount: number;
+  confidenceScore: number;
+  targetValueMostFrequent?: string;
+  targets: KeywordTargetStat[];
+  lastUsedAt?: string;
+  reliability: 'high' | 'medium' | 'low' | 'context_required';
+  reason: string;
+}
+
 export interface TrainingExampleInput {
   id?: string;
   sourceName?: string;
@@ -140,9 +165,10 @@ export interface TrainingExampleInput {
   gender?: string;
   matcherType?: MatcherType;
   confidenceScore?: number;
-  status?: 'draft' | 'validated' | 'rejected';
+  status?: MappingStatus | 'draft';
   validationCount?: number;
   rejectionCount?: number;
+  reason?: string;
 }
 
 export interface AiSuggestBatchPayload {

@@ -3,11 +3,13 @@ import { normalizeText } from '@/lib/mapping/normalize';
 import { generateCaseWhenSql } from '@/lib/mapping/sql';
 import { suggestContextualMapping } from '@/lib/mapping/contextual-rules';
 import { buildTrainingTextRepresentation, createLocalEmbedding, exportTrainingJsonl, suggestTrainingBatch } from '@/lib/mapping/ai-training';
-import { buildKnowledgeBasePreview, exportKnowledgeBaseCsv } from '@/lib/mapping/knowledge-base';
+import { buildKnowledgeBasePreview, exportKnowledgeBaseCsv, exportKnowledgeBaseSql } from '@/lib/mapping/knowledge-base';
 import { containsSqlCaseSyntax, parseSqlCaseMappings } from '@/lib/mapping/sql-case-parser';
 import { parseManualMappings, detectSourceTypologies } from '@/lib/mapping/source-profile';
 import { suggestMapping } from '@/lib/mapping/suggestions';
 import { testRules } from '@/lib/mapping/tester';
+import { buildKeywordStats, keywordNeedsContext } from '@/lib/mapping/keyword-stats';
+import { generateSqlFromKnowledgeRows, testKnowledgeRows, validatedKnowledgeRows } from '@/lib/mapping/rule-execution';
 import type { MappingRuleInput } from '@/lib/types/mapping';
 
 describe('normalizeText', () => {
@@ -317,5 +319,86 @@ describe('contextual SQL CASE mappings', () => {
 
     const conflicting = [contextualRows[0], { ...contextualRows[0], targetValue: 'Short chino' }];
     expect(buildKnowledgeBasePreview(conflicting).conflicts).toHaveLength(1);
+  });
+});
+
+
+describe('mapping review validation flow', () => {
+  const sql = `CASE
+    WHEN raw_data->>'model_category' = 'Pants' THEN CASE WHEN raw_data->>'model_description' ~* 'Chino' THEN 'Pantalon chino' END
+    WHEN raw_data->>'model_category' = 'Shorts' THEN CASE WHEN raw_data->>'model_description' ~* 'Chino' THEN 'Short chino' END
+  END`;
+
+  it('feeds SQL CASE imports into Mapping Review as detected rows, not saved rows', () => {
+    const preview = parseSqlCaseMappings(sql, 'Puma B2B', 'family');
+
+    expect(preview.mappings).toHaveLength(2);
+    expect(preview.mappings[0]).toMatchObject({ status: 'detected', ruleType: 'contextual', targetValue: 'Pantalon chino' });
+    expect(preview.mappings[0].conditions).toHaveLength(2);
+  });
+
+  it('uses only validated review mappings in Rule Builder SQL', () => {
+    const reviewRows = parseSqlCaseMappings(sql, 'Puma B2B', 'family').mappings.map((row, index) => ({
+      ...row,
+      status: index === 0 ? 'validated' as const : 'rejected' as const,
+    }));
+
+    const generatedSql = generateSqlFromKnowledgeRows(reviewRows, "raw_data->>'model_description'");
+
+    expect(generatedSql).toContain('Pantalon chino');
+    expect(generatedSql).not.toContain('Short chino');
+  });
+
+  it('does not export rejected mappings', () => {
+    const reviewRows = parseSqlCaseMappings(sql, 'Puma B2B', 'family').mappings.map((row, index) => ({
+      ...row,
+      status: index === 0 ? 'validated' as const : 'rejected' as const,
+    }));
+
+    const exportedSql = exportKnowledgeBaseSql(reviewRows, "raw_data->>'model_description'");
+
+    expect(exportedSql).toContain('Pantalon chino');
+    expect(exportedSql).not.toContain('Short chino');
+  });
+
+  it('applies validated contextual rules in Rule Tester', () => {
+    const reviewRows = parseSqlCaseMappings(sql, 'Puma B2B', 'family').mappings.map((row) => ({ ...row, status: 'validated' as const }));
+    const result = testKnowledgeRows([
+      { raw_data: { model_category: 'Pants', model_description: 'Slim chino pant' } },
+      { raw_data: { model_category: 'Shorts', model_description: 'Chino bermuda' } },
+      { raw_data: { model_category: 'Pants', model_description: 'Denim pant' } },
+    ], reviewRows, 'raw_data.model_description');
+
+    expect(result.matched).toBe(2);
+    expect(result.unmatched).toBe(1);
+    expect(result.examplesByTarget['Pantalon chino']).toHaveLength(1);
+    expect(result.examplesByTarget['Short chino']).toHaveLength(1);
+  });
+
+  it('detects that CHINO is a contextual keyword with multiple targets', () => {
+    const reviewRows = parseSqlCaseMappings(sql, 'Puma B2B', 'family').mappings.map((row) => ({ ...row, status: 'validated' as const, validationCount: 12 }));
+    const stats = buildKeywordStats(reviewRows);
+
+    expect(keywordNeedsContext(reviewRows, 'Chino')).toBe(true);
+    expect(stats[0]).toMatchObject({ keyword: 'Chino', reliability: 'context_required' });
+    expect(stats[0].targets.map((target) => target.targetValue)).toContain('Pantalon chino');
+    expect(stats[0].targets.map((target) => target.targetValue)).toContain('Short chino');
+  });
+
+  it('distinguishes contextual non-conflicts from identical-condition conflicts', () => {
+    const contextualRows = parseSqlCaseMappings(sql, 'Puma B2B', 'family').mappings;
+    expect(buildKnowledgeBasePreview(contextualRows).conflicts).toHaveLength(0);
+
+    const conflictingRows = [contextualRows[0], { ...contextualRows[0], targetValue: 'Short chino' }];
+    expect(buildKnowledgeBasePreview(conflictingRows).conflicts).toHaveLength(1);
+  });
+
+  it('keeps detected and rejected rows out of validated review rows', () => {
+    const reviewRows = parseSqlCaseMappings(sql, 'Puma B2B', 'family').mappings.map((row, index) => ({
+      ...row,
+      status: index === 0 ? 'validated' as const : 'detected' as const,
+    }));
+
+    expect(validatedKnowledgeRows(reviewRows)).toHaveLength(1);
   });
 });
