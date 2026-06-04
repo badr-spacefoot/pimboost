@@ -71,6 +71,8 @@ Tables créées :
 - `suggestion_memory`
 - `mapping_knowledge_base`
 - `target_values`
+- `training_examples`
+- `training_embeddings`
 
 ## Lancement local
 
@@ -192,3 +194,33 @@ Ces mappings historiques sont renvoyés avec la raison `source-history` et sont 
 - Aucune connexion directe à PIMuP n'est réalisée.
 - L'authentification est volontairement hors scope MVP et peut être ajoutée ensuite.
 - Les mappings restent en mode draft ou validation humaine.
+
+## AI Training local
+
+La page `/ai-training` ajoute un module IA local et entraînable sans fine-tuning LLM dans le MVP. Elle permet d’importer des mappings validés CSV/JSON, de les sauvegarder comme `training_examples`, de générer des embeddings locaux stockables dans `training_embeddings` via `pgvector`, puis de lancer des suggestions batch via `/api/ai/suggest-batch`.
+
+Le modèle d’embedding est encapsulé derrière un moteur local déterministe compatible avec l’architecture prévue pour `sentence-transformers/all-MiniLM-L6-v2`. Le code prépare la colonne `embedding vector` côté PostgreSQL/pgvector (`CREATE EXTENSION IF NOT EXISTS vector;`) afin de remplacer plus tard ce moteur par un vrai encodeur local, Ollama ou un modèle de classification sans changer les contrats API.
+
+La suggestion batch combine un scoring hybride : exact match, contains match, similarité textuelle, similarité sémantique locale, boosts `source_name` / `attribute_name` / `source_path` / `brand` / `sport` / `family`, `validation_count`, et malus `rejection_count`. Les suggestions restent des propositions draft : l’interface expose **Accepter**, **Rejeter**, **Modifier** et **Appliquer à tous les similaires**, puis envoie le feedback à `/api/ai/feedback` pour mettre à jour les compteurs de validation/rejet.
+
+Endpoint principal :
+
+```http
+POST /api/ai/suggest-batch
+```
+
+```json
+{
+  "source_name": "Puma B2B",
+  "attribute_name": "family",
+  "source_path": "raw_data.attributes.articletype[0].value",
+  "context": { "brand": "Puma", "sport": "Football", "category": "Accessories" },
+  "values": ["BB Caps", "Trucker Caps", "Backpacks", "Football Socks", "Running shoes", "Hoodies"]
+}
+```
+
+L’export `/api/ai/export-dataset` produit du JSONL pour préparer un futur fine-tuning local :
+
+```jsonl
+{"input":"source=Puma B2B; attribute=family; value=BB Caps; category=Accessories","output":"Casquette de baseball"}
+```

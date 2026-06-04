@@ -109,3 +109,42 @@ model TargetValue {
   @@unique([attributeName, targetValue])
   @@map("target_values")
 }
+
+model TrainingExample {
+  id                    String              @id @default(cuid())
+  sourceName            String?             @map("source_name")
+  attributeName         String              @map("attribute_name")
+  sourcePath            String?             @map("source_path")
+  sourceValue           String              @map("source_value")
+  sourceValueNormalized String              @map("source_value_normalized")
+  targetValue           String              @map("target_value")
+  family                String?
+  sport                 String?
+  category              String?
+  brand                 String?
+  gender                String?
+  matcherType           MatcherType         @default(exact) @map("matcher_type")
+  confidenceScore       Float               @default(1) @map("confidence_score")
+  status                RuleStatus          @default(validated)
+  validationCount       Int                 @default(1) @map("validation_count")
+  rejectionCount        Int                 @default(0) @map("rejection_count")
+  createdAt             DateTime            @default(now()) @map("created_at")
+  updatedAt             DateTime            @updatedAt @map("updated_at")
+  embeddings            TrainingEmbedding[]
+
+  @@index([sourceName, attributeName, sourceValueNormalized])
+  @@index([attributeName, targetValue])
+  @@map("training_examples")
+}
+
+model TrainingEmbedding {
+  id                String          @id @default(cuid())
+  trainingExampleId String          @map("training_example_id")
+  embedding         Unsupported("vector")?
+  textRepresentation String         @map("text_representation")
+  createdAt         DateTime        @default(now()) @map("created_at")
+  trainingExample   TrainingExample @relation(fields: [trainingExampleId], references: [id], onDelete: Cascade)
+
+  @@index([trainingExampleId])
+  @@map("training_embeddings")
+}

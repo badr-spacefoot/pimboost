@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeText } from '@/lib/mapping/normalize';
 import { generateCaseWhenSql } from '@/lib/mapping/sql';
+import { buildTrainingTextRepresentation, createLocalEmbedding, exportTrainingJsonl, suggestTrainingBatch } from '@/lib/mapping/ai-training';
 import { buildKnowledgeBasePreview, exportKnowledgeBaseCsv } from '@/lib/mapping/knowledge-base';
 import { containsSqlCaseSyntax, parseSqlCaseMappings } from '@/lib/mapping/sql-case-parser';
 import { parseManualMappings, detectSourceTypologies } from '@/lib/mapping/source-profile';
@@ -201,5 +202,46 @@ describe('manual one-to-one and SQL CASE parsing', () => {
 
     expect(preview.mappings).toHaveLength(1);
     expect(preview.debugCases[0]).toContain('ELSE CONCAT');
+  });
+});
+
+
+describe('AI training helpers', () => {
+  it('builds deterministic local embeddings', () => {
+    expect(createLocalEmbedding('Puma family BB Caps')).toEqual(createLocalEmbedding('Puma family BB Caps'));
+  });
+
+  it('suggests batch targets with hybrid exact/source/attribute scoring', () => {
+    const suggestions = suggestTrainingBatch(
+      {
+        sourceName: 'Puma B2B',
+        attributeName: 'family',
+        sourcePath: 'raw_data.attributes.articletype[0].value',
+        context: { brand: 'Puma', sport: 'Football', category: 'Accessories' },
+        values: ['BB Caps', 'Backpacks'],
+      },
+      [
+        { sourceName: 'Puma B2B', attributeName: 'family', sourcePath: 'raw_data.attributes.articletype[0].value', sourceValue: 'BB Caps', targetValue: 'Casquette de baseball', brand: 'Puma', sport: 'Football', category: 'Accessories', status: 'validated', validationCount: 5, rejectionCount: 0 },
+        { sourceName: 'Puma B2B', attributeName: 'family', sourcePath: 'raw_data.attributes.articletype[0].value', sourceValue: 'Backpack', targetValue: 'Sac à dos', brand: 'Puma', sport: 'Football', category: 'Accessories', status: 'validated', validationCount: 3, rejectionCount: 0 },
+      ],
+    );
+
+    expect(suggestions[0].suggestedTarget).toBe('Casquette de baseball');
+    expect(suggestions[0].confidence).toBeGreaterThan(0.9);
+    expect(suggestions[1].suggestedTarget).toBe('Sac à dos');
+  });
+
+  it('exports validated training examples as JSONL', () => {
+    const jsonl = exportTrainingJsonl([
+      { sourceName: 'Puma B2B', attributeName: 'family', sourceValue: 'BB Caps', targetValue: 'Casquette de baseball', category: 'Accessories', status: 'validated' },
+      { sourceName: 'Puma B2B', attributeName: 'family', sourceValue: 'Bad', targetValue: 'Ignored', status: 'rejected' },
+    ]);
+
+    expect(jsonl).toContain('{"input":"source=Puma B2B; attribute=family; value=BB Caps; category=Accessories","output":"Casquette de baseball"}');
+    expect(jsonl).not.toContain('Ignored');
+  });
+
+  it('creates training text representation with source and target context', () => {
+    expect(buildTrainingTextRepresentation({ sourceName: 'Puma B2B', attributeName: 'family', sourceValue: 'BB Caps', targetValue: 'Casquette de baseball' })).toContain('Puma B2B family BB Caps Casquette de baseball');
   });
 });

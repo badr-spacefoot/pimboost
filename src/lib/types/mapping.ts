@@ -112,3 +112,57 @@ export interface SqlCaseParsePreview {
   mappings: KnowledgeBaseMappingInput[];
   debugCases: string[];
 }
+
+export interface TrainingExampleInput {
+  id?: string;
+  sourceName?: string;
+  attributeName: string;
+  sourcePath?: string;
+  sourceValue: string;
+  sourceValueNormalized?: string;
+  targetValue: string;
+  family?: string;
+  sport?: string;
+  category?: string;
+  brand?: string;
+  gender?: string;
+  matcherType?: MatcherType;
+  confidenceScore?: number;
+  status?: 'draft' | 'validated' | 'rejected';
+  validationCount?: number;
+  rejectionCount?: number;
+}
+
+export interface AiSuggestBatchPayload {
+  sourceName?: string;
+  attributeName: string;
+  sourcePath?: string;
+  context?: {
+    brand?: string;
+    sport?: string;
+    category?: string;
+    family?: string;
+    gender?: string;
+  };
+  values: string[];
+}
+
+export interface AiSuggestion {
+  sourceValue: string;
+  suggestedTarget: string;
+  confidence: number;
+  matcherType: 'semantic' | 'exact' | 'contains' | 'similarity';
+  reason: string;
+  nearestExamples: Array<{ sourceValue: string; targetValue: string; similarity: number }>;
+  status?: 'draft';
+}
+
+export interface TrainingStats {
+  total: number;
+  bySource: Record<string, number>;
+  byAttribute: Record<string, number>;
+  bySport: Record<string, number>;
+  byFamily: Record<string, number>;
+  reliable: TrainingExampleInput[];
+  rejected: TrainingExampleInput[];
+}

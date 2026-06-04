@@ -353,7 +353,10 @@ export default function Home() {
         <p className="text-sm font-semibold uppercase tracking-[0.3em] text-blue-100">PIMuP interne</p>
         <div className="mt-3 flex flex-wrap items-center justify-between gap-4">
           <h1 className="text-4xl font-bold">PIMuP Mapping Assistant</h1>
-          <a href="/target-values" className="rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/30 hover:bg-white/25">Target Values</a>
+          <div className="flex gap-2">
+            <a href="/ai-training" className="rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/30 hover:bg-white/25">AI Training</a>
+            <a href="/target-values" className="rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/30 hover:bg-white/25">Target Values</a>
+          </div>
         </div>
         <p className="mt-3 max-w-3xl text-blue-50">
           Import CSV/JSON, suggestions de mapping, génération SQL PostgreSQL/JSONB et validation humaine en mode draft.
