@@ -1,0 +1,22 @@
+[
+  {
+    "source_name": "Nike",
+    "attribute_name": "family",
+    "source_value": "SNAPBACK",
+    "target_value": "Casquette snapback",
+    "family": "Accessoire",
+    "sport": "Lifestyle",
+    "category": "Casquette",
+    "brand": "Nike"
+  },
+  {
+    "source_name": "Puma",
+    "attribute_name": "family",
+    "source_value": "TRUCKER",
+    "target_value": "Casquette trucker",
+    "family": "Accessoire",
+    "sport": "Lifestyle",
+    "category": "Casquette",
+    "brand": "Puma"
+  }
+]

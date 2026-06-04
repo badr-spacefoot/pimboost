@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MatcherType {
+  exact
+  regex
+  contains
+}
+
+enum RuleStatus {
+  draft
+  validated
+  rejected
+}
+
+model MappingProject {
+  id            String        @id @default(cuid())
+  name          String
+  sourceName    String        @map("source_name")
+  attributeName String        @map("attribute_name")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+  rules         MappingRule[]
+
+  @@map("mapping_projects")
+}
+
+model MappingRule {
+  id              String           @id @default(cuid())
+  projectId       String           @map("project_id")
+  sourceValue     String           @map("source_value")
+  targetValue     String           @map("target_value")
+  matcherType     MatcherType      @map("matcher_type")
+  confidenceScore Float            @default(0) @map("confidence_score")
+  status          RuleStatus       @default(draft)
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+  project         MappingProject   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  history         MappingHistory[]
+
+  @@index([projectId])
+  @@map("mapping_rules")
+}
+
+model MappingHistory {
+  id             String      @id @default(cuid())
+  ruleId         String      @map("rule_id")
+  oldTargetValue String?     @map("old_target_value")
+  newTargetValue String      @map("new_target_value")
+  changedBy      String?     @map("changed_by")
+  changedAt      DateTime    @default(now()) @map("changed_at")
+  rule           MappingRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@index([ruleId])
+  @@map("mapping_history")
+}
+
+model SuggestionMemory {
+  id                    String   @id @default(cuid())
+  attributeName         String   @map("attribute_name")
+  sourceValueNormalized String   @map("source_value_normalized")
+  targetValue           String   @map("target_value")
+  usageCount            Int      @default(1) @map("usage_count")
+  lastUsedAt            DateTime @default(now()) @map("last_used_at")
+
+  @@unique([attributeName, sourceValueNormalized])
+  @@map("suggestion_memory")
+}
+
+model MappingKnowledgeBase {
+  id                    String     @id @default(cuid())
+  sourceName            String     @default("*") @map("source_name")
+  attributeName         String     @map("attribute_name")
+  sourceValue           String     @map("source_value")
+  sourceValueNormalized String     @map("source_value_normalized")
+  targetValue           String     @map("target_value")
+  family                String?
+  sport                 String?
+  category              String?
+  brand                 String?
+  gender                String?
+  confidenceScore       Float      @default(1) @map("confidence_score")
+  status                RuleStatus @default(validated)
+  validationCount       Int        @default(1) @map("validation_count")
+  createdAt             DateTime   @default(now()) @map("created_at")
+  updatedAt             DateTime   @updatedAt @map("updated_at")
+
+  @@unique([sourceName, attributeName, sourceValueNormalized], name: "source_attribute_source_value_unique")
+  @@index([attributeName, sourceValueNormalized])
+  @@index([attributeName, targetValue])
+  @@map("mapping_knowledge_base")
+}
+
+model TargetValue {
+  id            String   @id @default(cuid())
+  attributeName String   @map("attribute_name")
+  targetValue   String   @map("target_value")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@unique([attributeName, targetValue])
+  @@map("target_values")
+}

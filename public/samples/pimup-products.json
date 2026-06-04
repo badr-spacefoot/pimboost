@@ -1,0 +1,106 @@
+[
+  {
+    "sku": "CAP-SNAP-001",
+    "category": "caps",
+    "raw_data": {
+      "name": "Black SNAPBACK cap",
+      "modelName": "SNAPBACK CLASSIC",
+      "category": "Headwear",
+      "formattedCategories": ["Accessories", "Caps"],
+      "color": "Black",
+      "gender": "Unisex",
+      "season": "SS26"
+    }
+  },
+  {
+    "sku": "CAP-TRUCK-002",
+    "category": "caps",
+    "raw_data": {
+      "name": "Vintage TRUCKER mesh cap",
+      "modelName": "TRUCKER MESH",
+      "category": "Headwear",
+      "formattedCategories": ["Accessories", "Caps"],
+      "color": "Navy",
+      "gender": "Men",
+      "season": "SS26"
+    }
+  },
+  {
+    "sku": "SWIM-ONE-003",
+    "category": "swimwear",
+    "raw_data": {
+      "name": "Printed SWIMSUIT one piece",
+      "modelName": "TROPICAL ONE PIECE",
+      "category": "Beachwear",
+      "formattedCategories": ["Women", "Swimwear"],
+      "color": "Multi",
+      "gender": "Women",
+      "season": "SS26"
+    }
+  },
+  {
+    "sku": "SWIM-TOP-004",
+    "category": "swimwear",
+    "raw_data": {
+      "name": "BANDEAU BIKINI top blue",
+      "modelName": "BANDEAU TOP",
+      "category": "Beachwear",
+      "formattedCategories": ["Women", "Swimwear"],
+      "color": "Blue",
+      "gender": "Women",
+      "season": "SS26"
+    }
+  },
+  {
+    "sku": "SWIM-BOT-005",
+    "category": "swimwear",
+    "raw_data": {
+      "name": "BIKINI BOTTOM high waist",
+      "modelName": "HIGH WAIST BOTTOM",
+      "category": "Beachwear",
+      "formattedCategories": ["Women", "Swimwear"],
+      "color": "Green",
+      "gender": "Women",
+      "season": "SS26"
+    }
+  },
+  {
+    "sku": "TOP-TEE-006",
+    "category": "tops",
+    "raw_data": {
+      "name": "Organic cotton T-SHIRT",
+      "modelName": "ESSENTIAL TEE",
+      "category": "Tops",
+      "formattedCategories": ["Men", "Tops"],
+      "color": "White",
+      "gender": "Men",
+      "season": "FW26"
+    }
+  },
+  {
+    "sku": "SWEAT-HOOD-007",
+    "category": "sweats",
+    "raw_data": {
+      "name": "Oversized HOODIE fleece",
+      "modelName": "HOODY OVERSIZE",
+      "category": "Sweats",
+      "formattedCategories": ["Women", "Sweatshirts"],
+      "color": "Grey",
+      "gender": "Women",
+      "season": "FW26"
+    }
+  },
+  {
+    "sku": "UNKNOWN-008",
+    "category": "unknown",
+    "raw_data": {
+      "name": "Limited edition product",
+      "modelName": "LIMITED DROP",
+      "category": "Special",
+      "formattedCategories": ["Drops"],
+      "color": "Red",
+      "gender": "Unisex",
+      "season": "FW26"
+    }
+  }
+]
