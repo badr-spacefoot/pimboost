@@ -53,7 +53,7 @@ export async function GET(request: Request) {
       sourceValueNormalized: row.sourceValueNormalized,
       targetValue: row.targetValue,
       usageCount: row.validationCount,
-      reason: row.sourceName ? 'source-history' : 'memory',
+      reason: row.sourceName === '*' ? 'memory' : 'source-history',
     }));
 
     const suggestions = dedupeSuggestions([...sourceHistory, ...knowledgeBaseMemory, ...memory, ...SEED_SUGGESTIONS]);

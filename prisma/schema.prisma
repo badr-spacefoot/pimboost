@@ -80,6 +80,8 @@ model MappingKnowledgeBase {
   sourceValue           String     @map("source_value")
   sourceValueNormalized String     @map("source_value_normalized")
   targetValue           String     @map("target_value")
+  sourcePath            String?    @map("source_path")
+  matcherType           MatcherType @default(exact) @map("matcher_type")
   family                String?
   sport                 String?
   category              String?

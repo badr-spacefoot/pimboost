@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { normalizeText } from '@/lib/mapping/normalize';
 import { generateCaseWhenSql } from '@/lib/mapping/sql';
 import { buildKnowledgeBasePreview, exportKnowledgeBaseCsv } from '@/lib/mapping/knowledge-base';
+import { containsSqlCaseSyntax, parseSqlCaseMappings } from '@/lib/mapping/sql-case-parser';
 import { parseManualMappings, detectSourceTypologies } from '@/lib/mapping/source-profile';
 import { suggestMapping } from '@/lib/mapping/suggestions';
 import { testRules } from '@/lib/mapping/tester';
@@ -148,5 +149,57 @@ describe('knowledge base import helpers', () => {
 
     expect(csv).toContain('source_name,attribute_name,source_value,target_value');
     expect(csv).toContain('Adidas,family,TEE,T-shirt');
+  });
+});
+
+
+describe('manual one-to-one and SQL CASE parsing', () => {
+  it('parses only simple one-to-one manual mappings', () => {
+    expect(parseManualMappings('BB Caps => Casquette de baseball\nTrucker Caps ; Casquette trucker\nBackpacks, Sac à dos\n5 Panel Caps | Casquette 5 Pannel', 'family', 'Puma B2B')).toEqual([
+      { attributeName: 'family', sourceName: 'Puma B2B', sourceValueNormalized: 'BB CAPS', targetValue: 'Casquette de baseball', usageCount: 1, reason: 'source-history' },
+      { attributeName: 'family', sourceName: 'Puma B2B', sourceValueNormalized: 'TRUCKER CAPS', targetValue: 'Casquette trucker', usageCount: 1, reason: 'source-history' },
+      { attributeName: 'family', sourceName: 'Puma B2B', sourceValueNormalized: 'BACKPACKS', targetValue: 'Sac à dos', usageCount: 1, reason: 'source-history' },
+      { attributeName: 'family', sourceName: 'Puma B2B', sourceValueNormalized: '5 PANEL CAPS', targetValue: 'Casquette 5 Pannel', usageCount: 1, reason: 'source-history' },
+    ]);
+  });
+
+  it('rejects SQL CASE content in the one-to-one manual parser', () => {
+    const input = "CASE WHEN raw_data->>'name' = 'BB Caps' THEN 'Casquette de baseball' ELSE CONCAT('x') END";
+
+    expect(containsSqlCaseSyntax(input)).toBe(true);
+    expect(parseManualMappings(input, 'family', 'Puma B2B')).toEqual([]);
+  });
+
+  it('parses WHEN equality into an exact mapping', () => {
+    const preview = parseSqlCaseMappings("WHEN raw_data->'attributes'->'articletype'->0->>'value' = 'BB Caps'\nTHEN 'Casquette de baseball'", 'Puma B2B', 'family');
+
+    expect(preview.mappings[0]).toMatchObject({
+      sourceName: 'Puma B2B',
+      attributeName: 'family',
+      sourcePath: 'raw_data.attributes.articletype[0].value',
+      matcherType: 'exact',
+      sourceValue: 'BB Caps',
+      targetValue: 'Casquette de baseball',
+    });
+  });
+
+  it('parses WHEN IN into multiple exact mappings', () => {
+    const preview = parseSqlCaseMappings("WHEN raw_data->'attributes'->'articletype'->0->>'value' IN ('Trucker Caps', '5 Panel Caps')\nTHEN 'Casquette trucker'", 'Puma B2B', 'family');
+
+    expect(preview.mappings.map((mapping) => mapping.sourceValue)).toEqual(['Trucker Caps', '5 Panel Caps']);
+    expect(preview.mappings.every((mapping) => mapping.matcherType === 'exact')).toBe(true);
+  });
+
+  it('parses WHEN regex into a regex mapping', () => {
+    const preview = parseSqlCaseMappings("WHEN raw_data->'attributes'->'articletype'->0->>'value' ~* 'Backpack'\nTHEN 'Sac à dos'", 'Puma B2B', 'family');
+
+    expect(preview.mappings[0]).toMatchObject({ matcherType: 'regex', sourceValue: 'Backpack', targetValue: 'Sac à dos' });
+  });
+
+  it('excludes ELSE CONCAT debug cases from mappings', () => {
+    const preview = parseSqlCaseMappings("CASE WHEN raw_data->>'name' = 'BB Caps' THEN 'Casquette de baseball' ELSE CONCAT(raw_data->>'name', ' - debug') END", 'Puma B2B', 'family');
+
+    expect(preview.mappings).toHaveLength(1);
+    expect(preview.debugCases[0]).toContain('ELSE CONCAT');
   });
 });

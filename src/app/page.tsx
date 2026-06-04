@@ -9,11 +9,12 @@ import { getDistinctValues } from '@/lib/mapping/distinct';
 import { flattenFieldPaths } from '@/lib/mapping/paths';
 import { parseSourceFile } from '@/lib/mapping/parser';
 import { buildKnowledgeBasePreview, exportKnowledgeBaseCsv, exportKnowledgeBaseJson, exportKnowledgeBaseSql, parseKnowledgeBaseFile } from '@/lib/mapping/knowledge-base';
+import { containsSqlCaseSyntax, parseSqlCaseMappings } from '@/lib/mapping/sql-case-parser';
 import { generateCaseWhenSql } from '@/lib/mapping/sql';
 import { detectSourceTypologies, parseManualMappings } from '@/lib/mapping/source-profile';
 import { SEED_SUGGESTIONS, suggestMapping } from '@/lib/mapping/suggestions';
 import { testRules } from '@/lib/mapping/tester';
-import type { KnowledgeBaseImportPreview, KnowledgeBaseMappingInput, MappingRow, MappingRuleInput, SourceRecord, SuggestionMemoryEntry } from '@/lib/types/mapping';
+import type { KnowledgeBaseImportPreview, KnowledgeBaseMappingInput, MappingRow, MappingRuleInput, SourceRecord, SqlCaseParsePreview, SuggestionMemoryEntry } from '@/lib/types/mapping';
 
 const DEFAULT_SOURCE_NAMES = ['Nike B2B', 'Puma B2B', 'Ekkia', 'Bihr', 'DK Company', 'Tamaris', 'New Era'];
 const DEFAULT_ATTRIBUTE_NAMES = ['family', 'size', 'color', 'season', 'gender', 'sport'];
@@ -41,6 +42,9 @@ export default function Home() {
   const [knowledgeBasePreview, setKnowledgeBasePreview] = useState<KnowledgeBaseImportPreview | null>(null);
   const [knowledgeBaseMessage, setKnowledgeBaseMessage] = useState('');
   const [exportFormat, setExportFormat] = useState<'csv' | 'json' | 'sql'>('csv');
+  const [sqlCaseInput, setSqlCaseInput] = useState("WHEN raw_data->'attributes'->'articletype'->0->>'value' = 'BB Caps'\nTHEN 'Casquette de baseball'");
+  const [sqlCasePreview, setSqlCasePreview] = useState<SqlCaseParsePreview | null>(null);
+  const [sqlCaseMessage, setSqlCaseMessage] = useState('');
 
   const fields = useMemo(() => flattenFieldPaths(records), [records]);
   const detectedTypologies = useMemo(() => detectSourceTypologies(records), [records]);
@@ -186,6 +190,11 @@ export default function Home() {
   }
 
   function applyManualMappings() {
+    if (containsSqlCaseSyntax(manualMappingsInput)) {
+      setManualMappingMessage('Le contenu semble être une règle SQL complète. Merci d’utiliser l’import SQL Parser ou de fournir un mapping one-to-one simple.');
+      return;
+    }
+
     if (!sourceName.trim() || !manualAttributeName.trim()) {
       setManualMappingMessage('Renseignez Source Name et Attribute Name pour associer ces mappings à une source et un attribut.');
       return;
@@ -213,6 +222,29 @@ export default function Home() {
     setSourceMappingCount(mergedMemory.filter((entry) => entry.sourceName === sourceName.trim()).length);
     if (manualAttributeName.trim() === fieldPath) rebuildRows(records, fieldPath, mergedMemory, sourceName.trim());
     setManualMappingMessage(`${manualMappings.length} mapping(s) associés à ${sourceName.trim()} / ${manualAttributeName.trim()}. Les suggestions futures de cette source seront prioritaires.`);
+  }
+
+  function previewSqlCaseMappings() {
+    if (!sourceName.trim() || !manualAttributeName.trim()) {
+      setSqlCaseMessage('Renseignez Source Name et Attribute Name avant de parser une règle SQL CASE.');
+      return;
+    }
+
+    const preview = parseSqlCaseMappings(sqlCaseInput, sourceName.trim(), manualAttributeName.trim());
+    setSqlCasePreview(preview);
+    setSqlCaseMessage(preview.valid ? `${preview.valid} mapping(s) détectés depuis la règle SQL.` : 'Aucun mapping valide détecté dans la règle SQL.');
+  }
+
+  function addSqlCaseMappingsToPreview() {
+    if (!sqlCasePreview?.mappings.length) {
+      setSqlCaseMessage('Aucun mapping SQL valide à ajouter.');
+      return;
+    }
+
+    setKnowledgeBaseRows((current) => [...sqlCasePreview.mappings, ...current]);
+    setKnowledgeBasePreview(buildKnowledgeBasePreview([...sqlCasePreview.mappings, ...knowledgeBaseRows]));
+    setTargetValues((current) => Array.from(new Set([...current, ...sqlCasePreview.mappings.map((mapping) => mapping.targetValue)])).sort((a, b) => a.localeCompare(b)));
+    setSqlCaseMessage(`${sqlCasePreview.mappings.length} mapping(s) ajoutés au preview knowledge base. Validez puis sauvegardez.`);
   }
 
   function dedupeSuggestionMemory(entries: SuggestionMemoryEntry[]) {
@@ -442,15 +474,78 @@ export default function Home() {
               className="mt-4 w-full rounded-xl border border-slate-300 px-4 py-3 text-sm font-mono focus:border-pimup-500"
               placeholder={"SNAPBACK => Casquette snapback\nRUNNING => Running"}
             />
+            {containsSqlCaseSyntax(manualMappingsInput) && (
+              <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                Le contenu semble être une règle SQL complète. Merci d’utiliser l’import SQL Parser ou de fournir un mapping one-to-one simple.
+              </p>
+            )}
             <button
               type="button"
               onClick={applyManualMappings}
-              disabled={!canAddManualMappings}
+              disabled={!canAddManualMappings || containsSqlCaseSyntax(manualMappingsInput)}
               className="mt-3 w-full rounded-xl bg-pimup-700 px-4 py-2 font-semibold text-white hover:bg-pimup-800 disabled:bg-slate-300 disabled:text-slate-500"
             >
               Ajouter à cette source
             </button>
             {manualMappingMessage && <p className="mt-3 text-sm text-slate-600">{manualMappingMessage}</p>}
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="text-xl font-semibold">Import SQL CASE Parser</h2>
+            <p className="mt-2 text-sm text-slate-500">
+              Collez ici une règle SQL CASE WHEN complète. Les blocs WHEN/THEN supportés seront convertis en mappings avec source_path et matcher_type. Les ELSE CONCAT(...) sont ignorés.
+            </p>
+            <textarea
+              value={sqlCaseInput}
+              onChange={(event) => setSqlCaseInput(event.target.value)}
+              rows={6}
+              className="mt-4 w-full rounded-xl border border-slate-300 px-4 py-3 text-sm font-mono focus:border-pimup-500"
+              placeholder={"WHEN raw_data->'attributes'->'articletype'->0->>'value' = 'BB Caps'\nTHEN 'Casquette de baseball'"}
+            />
+            <div className="mt-3 flex gap-2">
+              <button type="button" onClick={previewSqlCaseMappings} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
+                Prévisualiser SQL
+              </button>
+              <button type="button" onClick={addSqlCaseMappingsToPreview} disabled={!sqlCasePreview?.mappings.length} className="rounded-xl bg-pimup-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-300">
+                Ajouter au preview
+              </button>
+            </div>
+            {sqlCaseMessage && <p className="mt-3 text-sm text-slate-600">{sqlCaseMessage}</p>}
+            {sqlCasePreview && (
+              <div className="mt-4 space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <StatCard label="Lignes détectées" value={sqlCasePreview.detected} />
+                  <StatCard label="Mappings valides" value={sqlCasePreview.valid} tone="success" />
+                  <StatCard label="Ignorés" value={sqlCasePreview.ignored} tone="warning" />
+                  <StatCard label="Erreurs" value={sqlCasePreview.errors.length} tone="warning" />
+                </div>
+                <div className="max-h-48 overflow-auto rounded-xl border border-slate-200">
+                  <table className="min-w-full text-xs">
+                    <thead className="bg-slate-50 text-left uppercase text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2">source_path</th>
+                        <th className="px-3 py-2">matcher_type</th>
+                        <th className="px-3 py-2">source_value</th>
+                        <th className="px-3 py-2">target_value</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {sqlCasePreview.mappings.map((mapping, index) => (
+                        <tr key={`${mapping.sourcePath}-${mapping.sourceValue}-${index}`}>
+                          <td className="px-3 py-2">{mapping.sourcePath}</td>
+                          <td className="px-3 py-2">{mapping.matcherType}</td>
+                          <td className="px-3 py-2">{mapping.sourceValue}</td>
+                          <td className="px-3 py-2">{mapping.targetValue}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {(sqlCasePreview.debugCases.length > 0 || sqlCasePreview.errors.length > 0) && (
+                  <pre className="max-h-32 overflow-auto rounded-xl bg-slate-100 p-3 text-xs text-slate-700">{JSON.stringify({ ignored: sqlCasePreview.debugCases, errors: sqlCasePreview.errors }, null, 2)}</pre>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">

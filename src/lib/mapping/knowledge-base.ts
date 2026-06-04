@@ -4,7 +4,7 @@ import { generateCaseWhenSql } from './sql';
 import type { KnowledgeBaseImportPreview, KnowledgeBaseMappingInput, MappingRuleInput } from '@/lib/types/mapping';
 
 const REQUIRED_COLUMNS = ['attribute_name', 'source_value', 'target_value'];
-const OPTIONAL_COLUMNS = ['source_name', 'family', 'sport', 'category', 'brand', 'gender', 'confidence_score', 'status'];
+const OPTIONAL_COLUMNS = ['source_name', 'source_path', 'matcher_type', 'family', 'sport', 'category', 'brand', 'gender', 'confidence_score', 'status'];
 
 export async function parseKnowledgeBaseFile(file: File): Promise<KnowledgeBaseMappingInput[]> {
   const text = await file.text();
@@ -31,6 +31,8 @@ export function normalizeKnowledgeBaseRow(row: Record<string, unknown>): Knowled
     attributeName: stringValue(row.attribute_name),
     sourceValue: stringValue(row.source_value),
     targetValue: stringValue(row.target_value),
+    sourcePath: optionalString(row.source_path),
+    matcherType: row.matcher_type === 'regex' || row.matcher_type === 'contains' ? row.matcher_type : 'exact',
     family: optionalString(row.family),
     sport: optionalString(row.sport),
     category: optionalString(row.category),
@@ -87,6 +89,8 @@ export function exportKnowledgeBaseCsv(rows: KnowledgeBaseMappingInput[]): strin
     attribute_name: row.attributeName,
     source_value: row.sourceValue,
     target_value: row.targetValue,
+    source_path: row.sourcePath ?? '',
+    matcher_type: row.matcherType ?? 'exact',
     family: row.family ?? '',
     sport: row.sport ?? '',
     category: row.category ?? '',
@@ -104,7 +108,7 @@ export function exportKnowledgeBaseJson(rows: KnowledgeBaseMappingInput[]): stri
 export function exportKnowledgeBaseSql(rows: KnowledgeBaseMappingInput[], sourceExpression: string): string {
   const rules: MappingRuleInput[] = rows
     .filter((row) => row.sourceValue && row.targetValue)
-    .map((row) => ({ sourceValue: row.sourceValue, targetValue: row.targetValue, matcherType: 'contains', confidenceScore: row.confidenceScore ?? 1, status: 'validated' }));
+    .map((row) => ({ sourceValue: row.sourceValue, targetValue: row.targetValue, matcherType: row.matcherType ?? 'contains', confidenceScore: row.confidenceScore ?? 1, status: 'validated' }));
   return generateCaseWhenSql(sourceExpression, rules).sql;
 }
 

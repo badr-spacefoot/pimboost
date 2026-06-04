@@ -130,7 +130,7 @@ Les tests couvrent :
 
 ## Knowledge base one-to-one
 
-La table `mapping_knowledge_base` stocke les mappings fiables `source_value → target_value` validés par l’utilisateur. Elle contient `source_name`, `attribute_name`, `source_value`, `source_value_normalized`, `target_value`, `family`, `sport`, `category`, `brand`, `gender`, `confidence_score`, `status` et `validation_count`.
+La table `mapping_knowledge_base` stocke les mappings fiables `source_value → target_value` validés par l’utilisateur. Elle contient `source_name`, `attribute_name`, `source_value`, `source_value_normalized`, `target_value`, `source_path`, `matcher_type`, `family`, `sport`, `category`, `brand`, `gender`, `confidence_score`, `status` et `validation_count`.
 
 Le bloc **Import mappings one-to-one CSV/JSON** accepte :
 
@@ -146,6 +146,19 @@ Ou un tableau JSON d’objets utilisant les mêmes clés. Les fichiers exemples 
 Après import, l’interface affiche le nombre de lignes importées, valides, invalides, doublons, mappings existants et conflits. Un conflit correspond à un même couple `source_value` + `attribute_name` avec une `target_value` différente. L’utilisateur peut alors garder l’existant, remplacer, créer une exception par source ou ignorer la ligne avant sauvegarde.
 
 Les mappings sauvegardés sont réinjectés dans `/api/suggestions` et deviennent immédiatement disponibles pour les imports suivants : par exemple `TEE → T-shirt` peut suggérer `T-shirt` pour `OVERSIZED TEE` via le matching keyword/contains.
+
+
+## Import SQL CASE Parser
+
+L’éditeur **Éditeur de mappings existants** accepte uniquement des mappings one-to-one simples : `SOURCE => TARGET`, `SOURCE ; TARGET`, `SOURCE, TARGET` ou `SOURCE | TARGET`. Si le contenu contient des marqueurs SQL (`CASE`, `WHEN`, `THEN`, `ELSE`, `END`, `raw_data->`, `CONCAT(`), il n’est pas importé comme mapping one-to-one et l’interface affiche un warning demandant d’utiliser **Import SQL CASE Parser**.
+
+Le module **Import SQL CASE Parser** analyse les règles `WHEN ... THEN ...` et extrait `source_path`, `matcher_type`, `source_value` et `target_value`. Il supporte :
+
+- `WHEN <path> = 'value' THEN 'target'` → `matcher_type = exact` ;
+- `WHEN <path> IN ('value 1', 'value 2') THEN 'target'` → plusieurs mappings `exact` ;
+- `WHEN <path> ~* 'regex' THEN 'target'` → `matcher_type = regex`.
+
+Les lignes `ELSE CONCAT(...)` sont ignorées et affichées dans la section debug/unmapped cases afin d’éviter la création automatique de mappings invalides.
 
 ## Target Values et exports
 

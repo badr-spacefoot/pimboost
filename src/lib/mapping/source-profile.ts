@@ -1,4 +1,5 @@
 import { normalizeText } from './normalize';
+import { containsSqlCaseSyntax } from './sql-case-parser';
 import type { SourceRecord, SuggestionMemoryEntry, TypologyDetection } from '@/lib/types/mapping';
 
 const TYPOLOGY_KEYWORDS: Array<{ label: string; keywords: string[] }> = [
@@ -19,6 +20,8 @@ export function parseManualMappings(
   attributeName: string,
   sourceName: string,
 ): SuggestionMemoryEntry[] {
+  if (containsSqlCaseSyntax(input)) return [];
+
   return input
     .split('\n')
     .map((line) => line.trim())

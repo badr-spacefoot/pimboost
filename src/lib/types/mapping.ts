@@ -69,6 +69,8 @@ export interface KnowledgeBaseMappingInput {
   attributeName: string;
   sourceValue: string;
   targetValue: string;
+  sourcePath?: string;
+  matcherType?: MatcherType;
   family?: string;
   sport?: string;
   category?: string;
@@ -99,4 +101,14 @@ export interface KnowledgeBaseImportPreview {
     duplicate: boolean;
     existing: boolean;
   }>;
+}
+
+
+export interface SqlCaseParsePreview {
+  detected: number;
+  valid: number;
+  ignored: number;
+  errors: string[];
+  mappings: KnowledgeBaseMappingInput[];
+  debugCases: string[];
 }

@@ -41,6 +41,8 @@ export async function POST(request: Request) {
         update: {
           sourceValue: mapping.sourceValue,
           targetValue: mapping.targetValue,
+          sourcePath: mapping.sourcePath,
+          matcherType: mapping.matcherType ?? 'exact',
           family: mapping.family,
           sport: mapping.sport,
           category: mapping.category,
@@ -56,6 +58,8 @@ export async function POST(request: Request) {
           sourceValue: mapping.sourceValue,
           sourceValueNormalized: normalizeText(mapping.sourceValue),
           targetValue: mapping.targetValue,
+          sourcePath: mapping.sourcePath,
+          matcherType: mapping.matcherType ?? 'exact',
           family: mapping.family,
           sport: mapping.sport,
           category: mapping.category,
@@ -97,6 +101,8 @@ function toKnowledgeBaseInput(row: {
   attributeName: string;
   sourceValue: string;
   targetValue: string;
+  sourcePath?: string | null;
+  matcherType?: 'exact' | 'regex' | 'contains';
   family?: string | null;
   sport?: string | null;
   category?: string | null;
@@ -112,6 +118,8 @@ function toKnowledgeBaseInput(row: {
     attributeName: row.attributeName,
     sourceValue: row.sourceValue,
     targetValue: row.targetValue,
+    sourcePath: row.sourcePath ?? undefined,
+    matcherType: row.matcherType,
     family: row.family ?? undefined,
     sport: row.sport ?? undefined,
     category: row.category ?? undefined,
