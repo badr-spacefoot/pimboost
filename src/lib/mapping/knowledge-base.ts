@@ -1,10 +1,10 @@
 import Papa from 'papaparse';
 import { normalizeText } from './normalize';
 import { generateCaseWhenSql } from './sql';
-import type { KnowledgeBaseImportPreview, KnowledgeBaseMappingInput, MappingRuleInput } from '@/lib/types/mapping';
+import type { KnowledgeBaseImportPreview, KnowledgeBaseMappingInput, MappingCondition, MappingRuleInput } from '@/lib/types/mapping';
 
 const REQUIRED_COLUMNS = ['attribute_name', 'source_value', 'target_value'];
-const OPTIONAL_COLUMNS = ['source_name', 'source_path', 'matcher_type', 'family', 'sport', 'category', 'brand', 'gender', 'confidence_score', 'status'];
+const OPTIONAL_COLUMNS = ['source_name', 'source_path', 'matcher_type', 'rule_type', 'conditions', 'family', 'sport', 'category', 'brand', 'gender', 'confidence_score', 'status'];
 
 export async function parseKnowledgeBaseFile(file: File): Promise<KnowledgeBaseMappingInput[]> {
   const text = await file.text();
@@ -33,6 +33,8 @@ export function normalizeKnowledgeBaseRow(row: Record<string, unknown>): Knowled
     targetValue: stringValue(row.target_value),
     sourcePath: optionalString(row.source_path),
     matcherType: row.matcher_type === 'regex' || row.matcher_type === 'contains' ? row.matcher_type : 'exact',
+    ruleType: row.rule_type === 'contextual' || row.rule_type === 'regex' || row.rule_type === 'sql_case' ? row.rule_type : 'one_to_one',
+    conditions: parseConditions(row.conditions),
     family: optionalString(row.family),
     sport: optionalString(row.sport),
     category: optionalString(row.category),
@@ -48,21 +50,21 @@ export function buildKnowledgeBasePreview(
   existingRows: KnowledgeBaseMappingInput[] = [],
 ): KnowledgeBaseImportPreview {
   const existingByKey = new Map(existingRows.map((row) => [knowledgeBaseKey(row), row]));
-  const firstTargetByAttributeSource = new Map<string, string>();
+  const firstTargetByContext = new Map<string, string>();
   const duplicates = new Set<string>();
   const conflicts: KnowledgeBaseImportPreview['conflicts'] = [];
   const enrichedRows = rows.map((row, index) => {
     const errors = validateKnowledgeBaseRow(row);
     const rowKey = knowledgeBaseKey(row);
-    const conflictKey = `${row.attributeName}:${normalizeText(row.sourceValue)}`;
-    const previousTarget = firstTargetByAttributeSource.get(conflictKey);
+    const conflictKey = contextualConflictKey(row);
+    const previousTarget = firstTargetByContext.get(conflictKey);
     const existing = existingByKey.get(rowKey);
 
     if (rows.findIndex((candidate) => knowledgeBaseKey(candidate) === rowKey) !== index) duplicates.add(rowKey);
     if (previousTarget && previousTarget !== row.targetValue) {
       conflicts.push({ index, sourceValue: row.sourceValue, attributeName: row.attributeName, existingTargetValue: previousTarget, importedTargetValue: row.targetValue });
     } else {
-      firstTargetByAttributeSource.set(conflictKey, row.targetValue);
+      firstTargetByContext.set(conflictKey, row.targetValue);
     }
     if (existing && existing.targetValue !== row.targetValue) {
       conflicts.push({ index, sourceValue: row.sourceValue, attributeName: row.attributeName, existingTargetValue: existing.targetValue, importedTargetValue: row.targetValue });
@@ -91,6 +93,8 @@ export function exportKnowledgeBaseCsv(rows: KnowledgeBaseMappingInput[]): strin
     target_value: row.targetValue,
     source_path: row.sourcePath ?? '',
     matcher_type: row.matcherType ?? 'exact',
+    rule_type: row.ruleType ?? 'one_to_one',
+    conditions: row.conditions?.map((condition) => `${condition.sourcePath} ${condition.operator} ${condition.value}`).join(' AND ') ?? '',
     family: row.family ?? '',
     sport: row.sport ?? '',
     category: row.category ?? '',
@@ -113,8 +117,21 @@ export function exportKnowledgeBaseSql(rows: KnowledgeBaseMappingInput[], source
 }
 
 export function knowledgeBaseKey(row: KnowledgeBaseMappingInput): string {
-  return `${row.sourceName ?? '*'}:${row.attributeName}:${normalizeText(row.sourceValue)}`;
+  return `${row.sourceName ?? '*'}:${row.attributeName}:${conditionSignature(row)}:${normalizeText(row.sourceValue)}`;
 }
+
+export function contextualConflictKey(row: KnowledgeBaseMappingInput): string {
+  return `${row.sourceName ?? '*'}:${row.attributeName}:${conditionSignature(row) || normalizeText(row.sourceValue)}`;
+}
+
+export function conditionSignature(row: KnowledgeBaseMappingInput): string {
+  if (!row.conditions?.length) return '';
+  return [...row.conditions]
+    .map((condition) => `${condition.sourcePath}:${condition.operator}:${normalizeText(condition.value)}:${condition.conditionGroup ?? 'default'}`)
+    .sort()
+    .join('|');
+}
+
 
 export function validateKnowledgeBaseRow(row: KnowledgeBaseMappingInput): string[] {
   return REQUIRED_COLUMNS.flatMap((column) => {
@@ -125,6 +142,20 @@ export function validateKnowledgeBaseRow(row: KnowledgeBaseMappingInput): string
 
 export function knowledgeBaseColumns(): { required: string[]; optional: string[] } {
   return { required: REQUIRED_COLUMNS, optional: OPTIONAL_COLUMNS };
+}
+
+function parseConditions(value: unknown): MappingCondition[] | undefined {
+  if (!value) return undefined;
+  if (Array.isArray(value)) return value as MappingCondition[];
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (Array.isArray(parsed)) return parsed as MappingCondition[];
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 function camelCase(value: string): string {

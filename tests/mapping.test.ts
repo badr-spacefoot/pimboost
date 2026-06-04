@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeText } from '@/lib/mapping/normalize';
 import { generateCaseWhenSql } from '@/lib/mapping/sql';
+import { suggestContextualMapping } from '@/lib/mapping/contextual-rules';
 import { buildTrainingTextRepresentation, createLocalEmbedding, exportTrainingJsonl, suggestTrainingBatch } from '@/lib/mapping/ai-training';
 import { buildKnowledgeBasePreview, exportKnowledgeBaseCsv } from '@/lib/mapping/knowledge-base';
 import { containsSqlCaseSyntax, parseSqlCaseMappings } from '@/lib/mapping/sql-case-parser';
@@ -243,5 +244,78 @@ describe('AI training helpers', () => {
 
   it('creates training text representation with source and target context', () => {
     expect(buildTrainingTextRepresentation({ sourceName: 'Puma B2B', attributeName: 'family', sourceValue: 'BB Caps', targetValue: 'Casquette de baseball' })).toContain('Puma B2B family BB Caps Casquette de baseball');
+  });
+});
+
+describe('contextual SQL CASE mappings', () => {
+  it('keeps parent conditions in nested CASE mappings', () => {
+    const preview = parseSqlCaseMappings(`CASE
+      WHEN raw_data->>'model_category' = 'Pants' THEN
+        CASE WHEN raw_data->>'model_description' ~* 'Chino' THEN 'Pantalon chino' END
+      WHEN raw_data->>'model_category' = 'Shorts' THEN
+        CASE WHEN raw_data->>'model_description' ~* 'Chino' THEN 'Short chino' END
+    END`, 'Puma B2B', 'family');
+
+    expect(preview.mappings).toHaveLength(2);
+    expect(preview.mappings[0]).toMatchObject({ targetValue: 'Pantalon chino', ruleType: 'contextual' });
+    expect(preview.mappings[0].conditions).toEqual([
+      { sourcePath: 'raw_data.model_category', operator: '=', value: 'Pants' },
+      { sourcePath: 'raw_data.model_description', operator: '~*', value: 'Chino' },
+    ]);
+    expect(preview.mappings[1]).toMatchObject({ targetValue: 'Short chino' });
+    expect(preview.mappings[1].conditions?.[0]).toMatchObject({ value: 'Shorts' });
+  });
+
+  it('suggests Chino Pants and Chino Shorts from contextual conditions', () => {
+    const rules = parseSqlCaseMappings(`CASE
+      WHEN raw_data->>'model_category' = 'Pants' THEN CASE WHEN raw_data->>'model_description' ~* 'Chino' THEN 'Pantalon chino' END
+      WHEN raw_data->>'model_category' = 'Shorts' THEN CASE WHEN raw_data->>'model_description' ~* 'Chino' THEN 'Short chino' END
+    END`, 'Puma B2B', 'family').mappings;
+
+    expect(suggestContextualMapping({ raw_data: { model_category: 'Pants', model_description: 'Slim chino pant' } }, rules)?.targetValue).toBe('Pantalon chino');
+    expect(suggestContextualMapping({ raw_data: { model_category: 'Shorts', model_description: 'Chino bermuda' } }, rules)?.targetValue).toBe('Short chino');
+  });
+
+  it('separates Denim Dress, Denim Jacket and Denim Skirt contextual mappings', () => {
+    const rules = parseSqlCaseMappings(`CASE
+      WHEN raw_data->>'model_category' = 'Dress' THEN CASE WHEN raw_data->>'model_description' ~* 'Denim' THEN 'Robe denim' END
+      WHEN raw_data->>'model_category' = 'Jacket' THEN CASE WHEN raw_data->>'model_description' ~* 'Denim' THEN 'Veste denim' END
+      WHEN raw_data->>'model_category' = 'Skirt' THEN CASE WHEN raw_data->>'model_description' ~* 'Denim' THEN 'Jupe denim' END
+    END`, 'Puma B2B', 'family').mappings;
+
+    expect(suggestContextualMapping({ raw_data: { model_category: 'Dress', model_description: 'Blue denim' } }, rules)?.targetValue).toBe('Robe denim');
+    expect(suggestContextualMapping({ raw_data: { model_category: 'Jacket', model_description: 'Denim jacket' } }, rules)?.targetValue).toBe('Veste denim');
+    expect(suggestContextualMapping({ raw_data: { model_category: 'Skirt', model_description: 'Denim skirt' } }, rules)?.targetValue).toBe('Jupe denim');
+  });
+
+  it('distinguishes Shirt Dress from Shirt category', () => {
+    const rules = parseSqlCaseMappings(`CASE
+      WHEN raw_data->>'model_category' = 'Dress' THEN CASE WHEN raw_data->>'model_description' ~* 'Shirt' THEN 'Robe chemise' END
+      WHEN raw_data->>'model_category' = 'Shirt' THEN CASE WHEN raw_data->>'model_description' ~* 'Classic' THEN 'Chemise' END
+    END`, 'Puma B2B', 'family').mappings;
+
+    expect(suggestContextualMapping({ raw_data: { model_category: 'Dress', model_description: 'Shirt dress' } }, rules)?.targetValue).toBe('Robe chemise');
+    expect(suggestContextualMapping({ raw_data: { model_category: 'Shirt', model_description: 'Classic fit' } }, rules)?.targetValue).toBe('Chemise');
+  });
+
+  it('distinguishes Kimono Jacket from Kimono category', () => {
+    const rules = parseSqlCaseMappings(`CASE
+      WHEN raw_data->>'model_category' = 'Jacket' THEN CASE WHEN raw_data->>'model_description' ~* 'Kimono' THEN 'Veste kimono' END
+      WHEN raw_data->>'model_category' = 'Kimono' THEN CASE WHEN raw_data->>'model_description' ~* 'Printed' THEN 'Kimono' END
+    END`, 'Puma B2B', 'family').mappings;
+
+    expect(suggestContextualMapping({ raw_data: { model_category: 'Jacket', model_description: 'Kimono jacket' } }, rules)?.targetValue).toBe('Veste kimono');
+    expect(suggestContextualMapping({ raw_data: { model_category: 'Kimono', model_description: 'Printed' } }, rules)?.targetValue).toBe('Kimono');
+  });
+
+  it('only reports conflicts when contextual conditions are identical', () => {
+    const contextualRows = parseSqlCaseMappings(`CASE
+      WHEN raw_data->>'model_category' = 'Pants' THEN CASE WHEN raw_data->>'model_description' ~* 'Chino' THEN 'Pantalon chino' END
+      WHEN raw_data->>'model_category' = 'Shorts' THEN CASE WHEN raw_data->>'model_description' ~* 'Chino' THEN 'Short chino' END
+    END`, 'Puma B2B', 'family').mappings;
+    expect(buildKnowledgeBasePreview(contextualRows).conflicts).toHaveLength(0);
+
+    const conflicting = [contextualRows[0], { ...contextualRows[0], targetValue: 'Short chino' }];
+    expect(buildKnowledgeBasePreview(conflicting).conflicts).toHaveLength(1);
   });
 });

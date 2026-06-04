@@ -526,19 +526,17 @@ export default function Home() {
                   <table className="min-w-full text-xs">
                     <thead className="bg-slate-50 text-left uppercase text-slate-500">
                       <tr>
-                        <th className="px-3 py-2">source_path</th>
-                        <th className="px-3 py-2">matcher_type</th>
-                        <th className="px-3 py-2">source_value</th>
-                        <th className="px-3 py-2">target_value</th>
+                        <th className="px-3 py-2">Target Value</th>
+                        <th className="px-3 py-2">Conditions</th>
+                        <th className="px-3 py-2">Status</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {sqlCasePreview.mappings.map((mapping, index) => (
                         <tr key={`${mapping.sourcePath}-${mapping.sourceValue}-${index}`}>
-                          <td className="px-3 py-2">{mapping.sourcePath}</td>
-                          <td className="px-3 py-2">{mapping.matcherType}</td>
-                          <td className="px-3 py-2">{mapping.sourceValue}</td>
                           <td className="px-3 py-2">{mapping.targetValue}</td>
+                          <td className="px-3 py-2">{mapping.conditions?.map((condition) => `${condition.sourcePath} ${condition.operator} ${condition.value}`).join(' AND ') ?? mapping.sourceValue}</td>
+                          <td className="px-3 py-2">valid</td>
                         </tr>
                       ))}
                     </tbody>

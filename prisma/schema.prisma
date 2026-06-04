@@ -19,6 +19,13 @@ enum RuleStatus {
   rejected
 }
 
+enum MappingRuleType {
+  one_to_one
+  contextual
+  regex
+  sql_case
+}
+
 model MappingProject {
   id            String        @id @default(cuid())
   name          String
@@ -33,19 +40,39 @@ model MappingProject {
 
 model MappingRule {
   id              String           @id @default(cuid())
-  projectId       String           @map("project_id")
+  projectId       String?          @map("project_id")
+  sourceName      String?          @map("source_name")
+  attributeName   String?          @map("attribute_name")
   sourceValue     String           @map("source_value")
   targetValue     String           @map("target_value")
   matcherType     MatcherType      @map("matcher_type")
+  ruleType        MappingRuleType  @default(regex) @map("rule_type")
+  priority        Int              @default(100)
   confidenceScore Float            @default(0) @map("confidence_score")
   status          RuleStatus       @default(draft)
   createdAt       DateTime         @default(now()) @map("created_at")
   updatedAt       DateTime         @updatedAt @map("updated_at")
-  project         MappingProject   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project         MappingProject?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   history         MappingHistory[]
+  conditions      MappingRuleCondition[]
 
   @@index([projectId])
+  @@index([sourceName, attributeName, ruleType])
   @@map("mapping_rules")
+}
+
+model MappingRuleCondition {
+  id             String      @id @default(cuid())
+  ruleId         String      @map("rule_id")
+  sourcePath     String      @map("source_path")
+  operator       String
+  value          String
+  conditionGroup String      @default("default") @map("condition_group")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  rule           MappingRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@index([ruleId])
+  @@map("mapping_rule_conditions")
 }
 
 model MappingHistory {
@@ -82,6 +109,8 @@ model MappingKnowledgeBase {
   targetValue           String     @map("target_value")
   sourcePath            String?    @map("source_path")
   matcherType           MatcherType @default(exact) @map("matcher_type")
+  ruleType              MappingRuleType @default(one_to_one) @map("rule_type")
+  conditions            Json?
   family                String?
   sport                 String?
   category              String?

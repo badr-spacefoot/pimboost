@@ -224,3 +224,26 @@ L’export `/api/ai/export-dataset` produit du JSONL pour préparer un futur fin
 ```jsonl
 {"input":"source=Puma B2B; attribute=family; value=BB Caps; category=Accessories","output":"Casquette de baseball"}
 ```
+
+## Mappings contextuels multi-niveaux
+
+Le parser SQL CASE conserve maintenant les conditions parentes des `CASE` imbriqués. Par exemple, une règle parent `model_category = Pants` suivie d’une règle enfant `model_description ~* Chino` est importée comme une règle contextuelle complète :
+
+```json
+{
+  "source_name": "Puma B2B",
+  "attribute_name": "family",
+  "target_value": "Pantalon chino",
+  "conditions": [
+    { "source_path": "raw_data.model_category", "operator": "=", "value": "Pants" },
+    { "source_path": "raw_data.model_description", "operator": "~*", "value": "Chino" }
+  ],
+  "status": "validated"
+}
+```
+
+La preview SQL affiche désormais **Target Value | Conditions | Status**. Les conflits sont calculés avec la signature complète `source_name + attribute_name + conditions`, ce qui évite de considérer `Pants + Chino → Pantalon chino` et `Shorts + Chino → Short chino` comme un conflit. Un conflit réel existe uniquement si les mêmes conditions contextuelles produisent deux `target_value` différentes.
+
+Les tables `mapping_rules` et `mapping_rule_conditions` permettent de persister ces règles avec `rule_type = contextual`, une priorité, un statut et leurs conditions détaillées.
+
+Le moteur peut aussi être appelé via `POST /api/contextual-suggestions` avec un `record` JSON. Il évalue toutes les conditions avant de proposer une cible, par exemple `model_category = Pants` ET `model_description ~* Chino` retourne `Pantalon chino`, tandis que `model_category = Shorts` ET `model_description ~* Chino` retourne `Short chino`.

@@ -43,6 +43,8 @@ export async function POST(request: Request) {
           targetValue: mapping.targetValue,
           sourcePath: mapping.sourcePath,
           matcherType: mapping.matcherType ?? 'exact',
+          ruleType: mapping.ruleType ?? (mapping.conditions?.length ? 'contextual' : 'one_to_one'),
+          conditions: mapping.conditions,
           family: mapping.family,
           sport: mapping.sport,
           category: mapping.category,
@@ -60,6 +62,8 @@ export async function POST(request: Request) {
           targetValue: mapping.targetValue,
           sourcePath: mapping.sourcePath,
           matcherType: mapping.matcherType ?? 'exact',
+          ruleType: mapping.ruleType ?? (mapping.conditions?.length ? 'contextual' : 'one_to_one'),
+          conditions: mapping.conditions,
           family: mapping.family,
           sport: mapping.sport,
           category: mapping.category,
@@ -71,6 +75,30 @@ export async function POST(request: Request) {
         },
       });
       saved.push(row);
+
+      if (mapping.conditions?.length) {
+        await prisma.mappingRule.create({
+          data: {
+            sourceName: mapping.sourceName,
+            attributeName: mapping.attributeName,
+            sourceValue: mapping.sourceValue,
+            targetValue: mapping.targetValue,
+            matcherType: mapping.matcherType ?? 'exact',
+            ruleType: mapping.ruleType ?? 'contextual',
+            priority: 50,
+            confidenceScore: mapping.confidenceScore ?? 1,
+            status: mapping.status ?? 'validated',
+            conditions: {
+              create: mapping.conditions.map((condition, index) => ({
+                sourcePath: condition.sourcePath,
+                operator: condition.operator,
+                value: condition.value,
+                conditionGroup: condition.conditionGroup ?? `group_${index}`,
+              })),
+            },
+          },
+        });
+      }
 
       await prisma.suggestionMemory.upsert({
         where: {
@@ -103,6 +131,8 @@ function toKnowledgeBaseInput(row: {
   targetValue: string;
   sourcePath?: string | null;
   matcherType?: 'exact' | 'regex' | 'contains';
+  ruleType?: 'one_to_one' | 'contextual' | 'regex' | 'sql_case';
+  conditions?: unknown;
   family?: string | null;
   sport?: string | null;
   category?: string | null;
@@ -120,6 +150,8 @@ function toKnowledgeBaseInput(row: {
     targetValue: row.targetValue,
     sourcePath: row.sourcePath ?? undefined,
     matcherType: row.matcherType,
+    ruleType: row.ruleType,
+    conditions: Array.isArray(row.conditions) ? (row.conditions as never) : undefined,
     family: row.family ?? undefined,
     sport: row.sport ?? undefined,
     category: row.category ?? undefined,

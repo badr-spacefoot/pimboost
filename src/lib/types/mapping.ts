@@ -2,6 +2,8 @@ export type SourceRecord = Record<string, unknown>;
 
 export type MappingStatus = 'unmapped' | 'suggested' | 'validated';
 export type MatcherType = 'exact' | 'regex' | 'contains';
+export type MappingRuleType = 'one_to_one' | 'contextual' | 'regex' | 'sql_case';
+export type MappingConditionOperator = '=' | '~*' | 'IN' | 'contains';
 
 export interface FieldPath {
   label: string;
@@ -63,6 +65,13 @@ export interface TypologyDetection {
   confidenceScore: number;
 }
 
+export interface MappingCondition {
+  sourcePath: string;
+  operator: MappingConditionOperator;
+  value: string;
+  conditionGroup?: string;
+}
+
 export interface KnowledgeBaseMappingInput {
   id?: string;
   sourceName?: string;
@@ -71,6 +80,8 @@ export interface KnowledgeBaseMappingInput {
   targetValue: string;
   sourcePath?: string;
   matcherType?: MatcherType;
+  ruleType?: MappingRuleType;
+  conditions?: MappingCondition[];
   family?: string;
   sport?: string;
   category?: string;
@@ -92,6 +103,7 @@ export interface KnowledgeBaseImportPreview {
     index: number;
     sourceValue: string;
     attributeName: string;
+    conditions?: MappingCondition[];
     existingTargetValue: string;
     importedTargetValue: string;
   }>;

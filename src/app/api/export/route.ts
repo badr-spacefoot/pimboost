@@ -20,6 +20,8 @@ export async function GET(request: Request) {
       targetValue: row.targetValue,
       sourcePath: row.sourcePath ?? undefined,
       matcherType: row.matcherType,
+      ruleType: row.ruleType,
+      conditions: Array.isArray(row.conditions) ? (row.conditions as never) : undefined,
       family: row.family ?? undefined,
       sport: row.sport ?? undefined,
       category: row.category ?? undefined,
