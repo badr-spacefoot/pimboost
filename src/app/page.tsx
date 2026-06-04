@@ -15,6 +15,9 @@ import { SEED_SUGGESTIONS, suggestMapping } from '@/lib/mapping/suggestions';
 import { testRules } from '@/lib/mapping/tester';
 import type { KnowledgeBaseImportPreview, KnowledgeBaseMappingInput, MappingRow, MappingRuleInput, SourceRecord, SuggestionMemoryEntry } from '@/lib/types/mapping';
 
+const DEFAULT_SOURCE_NAMES = ['Nike B2B', 'Puma B2B', 'Ekkia', 'Bihr', 'DK Company', 'Tamaris', 'New Era'];
+const DEFAULT_ATTRIBUTE_NAMES = ['family', 'size', 'color', 'season', 'gender', 'sport'];
+
 export default function Home() {
   const [records, setRecords] = useState<SourceRecord[]>([]);
   const [sourceName, setSourceName] = useState('');
@@ -27,8 +30,9 @@ export default function Home() {
   const [saveMessage, setSaveMessage] = useState('');
   const [suggestionMemory, setSuggestionMemory] = useState<SuggestionMemoryEntry[]>(SEED_SUGGESTIONS);
   const [sourceMappingCount, setSourceMappingCount] = useState(0);
-  const [knownSourceNames, setKnownSourceNames] = useState<string[]>([]);
+  const [knownSourceNames, setKnownSourceNames] = useState<string[]>(DEFAULT_SOURCE_NAMES);
   const [manualMappingsInput, setManualMappingsInput] = useState('SNAPBACK => Casquette snapback\nRUNNING => Running');
+  const [manualAttributeName, setManualAttributeName] = useState('family');
   const [manualMappingMessage, setManualMappingMessage] = useState('');
   const [targetValues, setTargetValues] = useState<string[]>(Array.from(new Set(SEED_SUGGESTIONS.map((suggestion) => suggestion.targetValue))).sort());
   const [targetAttributeName, setTargetAttributeName] = useState('family');
@@ -56,15 +60,20 @@ export default function Home() {
   );
   const generatedRule = useMemo(() => generateCaseWhenSql(sourceExpression || 'raw_data', rules), [sourceExpression, rules]);
   const testResult = useMemo(() => testRules(records, fieldPath, rules), [records, fieldPath, rules]);
+  const knownAttributeNames = useMemo(() => Array.from(new Set([...DEFAULT_ATTRIBUTE_NAMES, ...fields.map((field) => field.label), fieldPath, manualAttributeName].filter(Boolean))).sort((a, b) => a.localeCompare(b)), [fields, fieldPath, manualAttributeName]);
+  const canAddManualMappings = Boolean(sourceName.trim() && manualAttributeName.trim());
 
   useEffect(() => {
     async function loadKnownSources() {
       try {
-        const response = await fetch('/api/projects');
-        const projects = (await response.json()) as Array<{ sourceName?: string }>;
-        setKnownSourceNames(Array.from(new Set(projects.map((project) => project.sourceName).filter(Boolean) as string[])));
+        const [projectsResponse, knowledgeBaseResponse] = await Promise.all([fetch('/api/projects'), fetch('/api/knowledge-base')]);
+        const projects = (await projectsResponse.json()) as Array<{ sourceName?: string }>;
+        const knowledgeBaseRows = (await knowledgeBaseResponse.json()) as Array<{ sourceName?: string }>;
+        setKnownSourceNames(
+          Array.from(new Set([...DEFAULT_SOURCE_NAMES, ...(projects.map((project) => project.sourceName).filter(Boolean) as string[]), ...(knowledgeBaseRows.map((row) => row.sourceName).filter(Boolean) as string[])])).sort((a, b) => a.localeCompare(b)),
+        );
       } catch {
-        setKnownSourceNames([]);
+        setKnownSourceNames(DEFAULT_SOURCE_NAMES);
       }
     }
 
@@ -159,18 +168,30 @@ export default function Home() {
 
   async function renameSource(nextSourceName: string) {
     setSourceName(nextSourceName);
+    if (nextSourceName.trim()) setKnownSourceNames((current) => Array.from(new Set([...current, nextSourceName.trim()])).sort((a, b) => a.localeCompare(b)));
+    setManualMappingMessage('');
     setSaveMessage('');
     const memory = await loadSuggestionMemory(fieldPath, nextSourceName);
     rebuildRows(records, fieldPath, memory, nextSourceName);
   }
 
+  async function renameManualAttribute(nextAttributeName: string) {
+    setManualAttributeName(nextAttributeName);
+    setManualMappingMessage('');
+    const attributeForSuggestions = fieldPath || nextAttributeName;
+    if (attributeForSuggestions && sourceName.trim()) {
+      const memory = await loadSuggestionMemory(attributeForSuggestions, sourceName.trim());
+      rebuildRows(records, attributeForSuggestions, memory, sourceName.trim());
+    }
+  }
+
   function applyManualMappings() {
-    if (!sourceName.trim() || !fieldPath) {
-      setManualMappingMessage('Choisissez un nom de source et un champ avant d’ajouter des mappings.');
+    if (!sourceName.trim() || !manualAttributeName.trim()) {
+      setManualMappingMessage('Renseignez Source Name et Attribute Name pour associer ces mappings à une source et un attribut.');
       return;
     }
 
-    const manualMappings = parseManualMappings(manualMappingsInput, fieldPath, sourceName.trim());
+    const manualMappings = parseManualMappings(manualMappingsInput, manualAttributeName.trim(), sourceName.trim());
     if (!manualMappings.length) {
       setManualMappingMessage('Aucun mapping valide détecté. Format attendu : valeur source => valeur cible.');
       return;
@@ -185,12 +206,13 @@ export default function Home() {
       confidenceScore: 1,
       status: 'validated' as const,
     }));
+    setKnownSourceNames((current) => Array.from(new Set([...current, sourceName.trim()])).sort((a, b) => a.localeCompare(b)));
     setKnowledgeBaseRows((current) => [...manualKnowledgeBaseRows, ...current]);
     setTargetValues((current) => Array.from(new Set([...current, ...manualMappings.map((mapping) => mapping.targetValue)])).sort((a, b) => a.localeCompare(b)));
     setSuggestionMemory(mergedMemory);
     setSourceMappingCount(mergedMemory.filter((entry) => entry.sourceName === sourceName.trim()).length);
-    rebuildRows(records, fieldPath, mergedMemory, sourceName.trim());
-    setManualMappingMessage(`${manualMappings.length} mapping(s) ajoutés à la mémoire locale de cette source.`);
+    if (manualAttributeName.trim() === fieldPath) rebuildRows(records, fieldPath, mergedMemory, sourceName.trim());
+    setManualMappingMessage(`${manualMappings.length} mapping(s) associés à ${sourceName.trim()} / ${manualAttributeName.trim()}. Les suggestions futures de cette source seront prioritaires.`);
   }
 
   function dedupeSuggestionMemory(entries: SuggestionMemoryEntry[]) {
@@ -375,8 +397,44 @@ export default function Home() {
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <h2 className="text-xl font-semibold">3. Éditeur de mappings existants</h2>
             <p className="mt-2 text-sm text-slate-500">
-              Ajoutez des mappings connus pour la source sélectionnée. Ils sont appliqués immédiatement comme suggestions prioritaires.
+              Ajoutez des mappings connus pour une source et un attribut. Ils seront associés à cette source puis utilisés en priorité dans les suggestions futures.
             </p>
+            <div className="mt-4 grid gap-3">
+              <label className="block text-sm font-semibold text-slate-700" htmlFor="manual-source-name">
+                Source Name <span className="text-rose-600">*</span>
+              </label>
+              <input
+                id="manual-source-name"
+                list="known-source-names"
+                required
+                value={sourceName}
+                onChange={(event) => renameSource(event.target.value)}
+                className="w-full rounded-xl border border-slate-300 px-4 py-2 text-sm focus:border-pimup-500"
+                placeholder="Nike B2B, Puma B2B, Ekkia, Bihr..."
+              />
+              <label className="block text-sm font-semibold text-slate-700" htmlFor="manual-attribute-name">
+                Attribute Name <span className="text-rose-600">*</span>
+              </label>
+              <input
+                id="manual-attribute-name"
+                list="known-attribute-names"
+                required
+                value={manualAttributeName}
+                onChange={(event) => renameManualAttribute(event.target.value)}
+                className="w-full rounded-xl border border-slate-300 px-4 py-2 text-sm focus:border-pimup-500"
+                placeholder="family, size, color, season, gender, sport"
+              />
+              <datalist id="known-attribute-names">
+                {knownAttributeNames.map((attributeName) => (
+                  <option key={attributeName} value={attributeName} />
+                ))}
+              </datalist>
+            </div>
+            {!canAddManualMappings && (
+              <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                Source Name et Attribute Name sont obligatoires avant de pouvoir ajouter des mappings à la knowledge base locale.
+              </p>
+            )}
             <textarea
               value={manualMappingsInput}
               onChange={(event) => setManualMappingsInput(event.target.value)}
@@ -387,7 +445,8 @@ export default function Home() {
             <button
               type="button"
               onClick={applyManualMappings}
-              className="mt-3 w-full rounded-xl bg-pimup-700 px-4 py-2 font-semibold text-white hover:bg-pimup-800"
+              disabled={!canAddManualMappings}
+              className="mt-3 w-full rounded-xl bg-pimup-700 px-4 py-2 font-semibold text-white hover:bg-pimup-800 disabled:bg-slate-300 disabled:text-slate-500"
             >
               Ajouter à cette source
             </button>

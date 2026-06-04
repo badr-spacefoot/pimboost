@@ -161,7 +161,9 @@ Les mappings courants peuvent être exportés depuis l’interface en :
 
 Le bloc **Nom de la source / fournisseur** permet de nommer explicitement la source importée, par exemple `supplier-running-2026.csv`. Ce nom est envoyé à `/api/suggestions` pour récupérer les mappings déjà sauvegardés sur cette source et les appliquer en priorité. Les sources déjà présentes en base sont proposées via l’autocomplétion du champ.
 
-Le bloc **Éditeur de mappings existants** accepte un mapping par ligne, avec les formats `SOURCE => CIBLE`, `SOURCE; CIBLE`, `SOURCE, CIBLE` ou `SOURCE | CIBLE`. Ces mappings sont ajoutés à la mémoire locale de la source courante et reconstruisent immédiatement le tableau de suggestions. Ils restent locaux jusqu’à la sauvegarde draft PostgreSQL.
+Le bloc **Éditeur de mappings existants** affiche maintenant deux champs obligatoires avant la zone de saisie : **Source Name** et **Attribute Name**. `Source Name` est searchable avec autocomplétion des sources connues et des exemples métier (`Nike B2B`, `Puma B2B`, `Ekkia`, `Bihr`, `DK Company`, `Tamaris`, `New Era`) tout en permettant de saisir une nouvelle source. `Attribute Name` propose notamment `family`, `size`, `color`, `season`, `gender` et `sport`. Tant qu’un de ces champs est vide, le bouton **Ajouter à cette source** reste désactivé et un message explicite est affiché.
+
+Le même bloc accepte ensuite un mapping par ligne, avec les formats `SOURCE => CIBLE`, `SOURCE; CIBLE`, `SOURCE, CIBLE` ou `SOURCE | CIBLE`. Ces mappings sont associés au couple `Source Name` + `Attribute Name`, ajoutés à la mémoire locale de la source courante et utilisés en priorité dans les suggestions futures. Ils restent locaux jusqu’à la sauvegarde draft PostgreSQL.
 
 Le panneau **Typologies détectées** scanne les valeurs primitives des premières lignes importées et signale les sports, thématiques ou familles produit potentielles grâce à des mots-clés simples (`RUNNING`, `YOGA`, `SWIMSUIT`, `SNAPBACK`, etc.). Cette détection est volontairement indicative dans le MVP : elle aide l’utilisateur à choisir le bon champ ou la bonne cible, mais ne valide rien automatiquement.
 
