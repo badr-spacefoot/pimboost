@@ -2,86 +2,62 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Database, FileJson, Sparkles } from 'lucide-react';
-import { MappingTable } from '@/components/MappingTable';
 import { SqlPreview } from '@/components/SqlPreview';
 import { StatCard } from '@/components/StatCard';
 import { getDistinctValues } from '@/lib/mapping/distinct';
-import { flattenFieldPaths } from '@/lib/mapping/paths';
+import { flattenFieldPaths, getValueByPath } from '@/lib/mapping/paths';
 import { parseSourceFile } from '@/lib/mapping/parser';
-import { buildKnowledgeBasePreview, exportKnowledgeBaseCsv, exportKnowledgeBaseJson, exportKnowledgeBaseSql, parseKnowledgeBaseFile } from '@/lib/mapping/knowledge-base';
-import { buildKeywordStats } from '@/lib/mapping/keyword-stats';
-import { generateSqlFromKnowledgeRows, testKnowledgeRows, validatedKnowledgeRows, conditionsToHumanLabel } from '@/lib/mapping/rule-execution';
-import { containsSqlCaseSyntax, parseSqlCaseMappings } from '@/lib/mapping/sql-case-parser';
-import { generateCaseWhenSql } from '@/lib/mapping/sql';
-import { detectSourceTypologies, parseManualMappings } from '@/lib/mapping/source-profile';
-import { SEED_SUGGESTIONS, suggestMapping } from '@/lib/mapping/suggestions';
-import { testRules } from '@/lib/mapping/tester';
-import type { KnowledgeBaseImportPreview, KnowledgeBaseMappingInput, MappingRow, MappingRuleInput, SourceRecord, SqlCaseParsePreview, SuggestionMemoryEntry } from '@/lib/types/mapping';
+import { exportKnowledgeBaseCsv, exportKnowledgeBaseJson, exportKnowledgeBaseSql } from '@/lib/mapping/knowledge-base';
+import { buildBusinessKeywordStats, mappingReviewSummary, prepareMappingReviewRows } from '@/lib/mapping/mapping-review';
+import { conditionsToHumanLabel, generateSqlFromKnowledgeRows, knowledgeRowMatches, testKnowledgeRows, validatedKnowledgeRows } from '@/lib/mapping/rule-execution';
+import { parseSqlCaseMappings } from '@/lib/mapping/sql-case-parser';
+import { SEED_SUGGESTIONS } from '@/lib/mapping/suggestions';
+import type { KnowledgeBaseMappingInput, MappingRuleType, SourceRecord, SqlCaseParsePreview } from '@/lib/types/mapping';
 
 const DEFAULT_SOURCE_NAMES = ['Nike B2B', 'Puma B2B', 'Ekkia', 'Bihr', 'DK Company', 'Tamaris', 'New Era'];
 const DEFAULT_ATTRIBUTE_NAMES = ['family', 'size', 'color', 'season', 'gender', 'sport'];
 
 export default function Home() {
   const [records, setRecords] = useState<SourceRecord[]>([]);
-  const [sourceName, setSourceName] = useState('');
-  const [brandName, setBrandName] = useState('');
-  const [mappingType, setMappingType] = useState<'one_to_one' | 'sql_case' | 'contextual'>('one_to_one');
+  const [sourceName, setSourceName] = useState('Puma B2B');
+  const [brandName, setBrandName] = useState('Puma');
+  const [attributeName, setAttributeName] = useState('family');
+  const [mappingType, setMappingType] = useState<MappingRuleType>('sql_case');
   const [fieldPath, setFieldPath] = useState('');
-  const [rows, setRows] = useState<MappingRow[]>([]);
-  const [query, setQuery] = useState('');
-  const [selectedValues, setSelectedValues] = useState<Set<string>>(new Set());
-  const [bulkTarget, setBulkTarget] = useState('');
-  const [projectName, setProjectName] = useState('Mapping draft');
-  const [saveMessage, setSaveMessage] = useState('');
-  const [suggestionMemory, setSuggestionMemory] = useState<SuggestionMemoryEntry[]>(SEED_SUGGESTIONS);
-  const [sourceMappingCount, setSourceMappingCount] = useState(0);
   const [knownSourceNames, setKnownSourceNames] = useState<string[]>(DEFAULT_SOURCE_NAMES);
-  const [manualMappingsInput, setManualMappingsInput] = useState('SNAPBACK => Casquette snapback\nRUNNING => Running');
-  const [manualAttributeName, setManualAttributeName] = useState('family');
-  const [manualMappingMessage, setManualMappingMessage] = useState('');
-  const [targetValues, setTargetValues] = useState<string[]>(Array.from(new Set(SEED_SUGGESTIONS.map((suggestion) => suggestion.targetValue))).sort());
-  const [targetAttributeName, setTargetAttributeName] = useState('family');
-  const [newTargetValue, setNewTargetValue] = useState('');
-  const [knowledgeBaseRows, setKnowledgeBaseRows] = useState<KnowledgeBaseMappingInput[]>([]);
-  const [knowledgeBasePreview, setKnowledgeBasePreview] = useState<KnowledgeBaseImportPreview | null>(null);
-  const [knowledgeBaseMessage, setKnowledgeBaseMessage] = useState('');
-  const [exportFormat, setExportFormat] = useState<'csv' | 'json' | 'sql'>('csv');
-  const [sqlCaseInput, setSqlCaseInput] = useState("WHEN raw_data->'attributes'->'articletype'->0->>'value' = 'BB Caps'\nTHEN 'Casquette de baseball'");
+  const [sqlCaseInput, setSqlCaseInput] = useState(`CASE
+  WHEN raw_data->>'model_category' = 'Pants' THEN
+    CASE WHEN raw_data->>'model_description' ~* 'Chino' THEN 'Pantalon chino' END
+  WHEN raw_data->>'model_category' = 'Shorts' THEN
+    CASE WHEN raw_data->>'model_description' ~* 'Chino' THEN 'Short chino' END
+END`);
   const [sqlCasePreview, setSqlCasePreview] = useState<SqlCaseParsePreview | null>(null);
-  const [sqlCaseMessage, setSqlCaseMessage] = useState('');
+  const [reviewRows, setReviewRows] = useState<KnowledgeBaseMappingInput[]>([]);
+  const [parserMessage, setParserMessage] = useState('');
+  const [saveMessage, setSaveMessage] = useState('');
+  const [exportFormat, setExportFormat] = useState<'csv' | 'json' | 'sql'>('sql');
 
   const fields = useMemo(() => flattenFieldPaths(records), [records]);
-  const detectedTypologies = useMemo(() => detectSourceTypologies(records), [records]);
   const sourceExpression = fields.find((field) => field.label === fieldPath)?.sqlExpression ?? fieldPath;
-  const keywordStats = useMemo(() => buildKeywordStats(knowledgeBaseRows), [knowledgeBaseRows]);
-  const validatedReviewRows = useMemo(() => validatedKnowledgeRows(knowledgeBaseRows), [knowledgeBaseRows]);
-  const rules: MappingRuleInput[] = useMemo(
-    () =>
-      rows
-        .filter((row) => row.status === 'validated' && row.targetValue.trim())
-        .map((row) => ({
-          sourceValue: row.value,
-          targetValue: row.targetValue,
-          matcherType: 'contains',
-          confidenceScore: row.suggestion.confidenceScore,
-          status: row.status === 'validated' ? 'validated' : 'draft',
-        })),
-    [rows],
-  );
-  const generatedRule = useMemo(() => {
-    if (validatedReviewRows.length) return { sql: generateSqlFromKnowledgeRows(validatedReviewRows, sourceExpression || 'raw_data'), clauses: [] };
-    return generateCaseWhenSql(sourceExpression || 'raw_data', rules);
-  }, [sourceExpression, rules, validatedReviewRows]);
-  const testResult = useMemo(() => (validatedReviewRows.length ? testKnowledgeRows(records, validatedReviewRows, fieldPath) : testRules(records, fieldPath, rules)), [records, fieldPath, rules, validatedReviewRows]);
-  const coverageAfterValidation = useMemo(() => testKnowledgeRows(records, validatedReviewRows, fieldPath), [records, fieldPath, validatedReviewRows]);
-  const knownAttributeNames = useMemo(() => Array.from(new Set([...DEFAULT_ATTRIBUTE_NAMES, ...fields.map((field) => field.label), fieldPath, manualAttributeName].filter(Boolean))).sort((a, b) => a.localeCompare(b)), [fields, fieldPath, manualAttributeName]);
-  const canAddManualMappings = Boolean(sourceName.trim() && manualAttributeName.trim());
-  const reviewCounts = useMemo(() => ({
-    validated: knowledgeBaseRows.filter((row) => row.status === 'validated').length,
-    rejected: knowledgeBaseRows.filter((row) => row.status === 'rejected').length,
-    ignored: knowledgeBaseRows.filter((row) => row.status === 'ignored').length,
-    needsContext: knowledgeBaseRows.filter((row) => row.status === 'needs_context').length,
-  }), [knowledgeBaseRows]);
+  const validatedRows = useMemo(() => validatedKnowledgeRows(reviewRows), [reviewRows]);
+  const reviewSummary = useMemo(() => mappingReviewSummary(reviewRows), [reviewRows]);
+  const keywordStats = useMemo(() => buildBusinessKeywordStats(reviewRows), [reviewRows]);
+  const generatedSql = useMemo(() => generateSqlFromKnowledgeRows(validatedRows, sourceExpression || 'raw_data'), [validatedRows, sourceExpression]);
+  const testResult = useMemo(() => testKnowledgeRows(records, validatedRows, fieldPath), [records, validatedRows, fieldPath]);
+  const targetValues = useMemo(() => Array.from(new Set([...SEED_SUGGESTIONS.map((suggestion) => suggestion.targetValue), ...reviewRows.map((row) => row.targetValue).filter(Boolean)])).sort(), [reviewRows]);
+  const attributeNames = useMemo(() => Array.from(new Set([...DEFAULT_ATTRIBUTE_NAMES, ...fields.map((field) => field.label), attributeName].filter(Boolean))).sort(), [fields, attributeName]);
+  const coverageRows = useMemo(() => {
+    if (!records.length || !fieldPath) return [];
+    return getDistinctValues(records, fieldPath).map((distinct) => {
+      const sampleRecords = records.filter((record) => String(getValueByPath(record, fieldPath) ?? '') === distinct.value);
+      const targets = new Set<string>();
+      for (const record of sampleRecords) {
+        for (const rule of validatedRows) if (knowledgeRowMatches(record, rule, fieldPath)) targets.add(rule.targetValue);
+      }
+      const keywordStat = keywordStats.find((stat) => distinct.value.toUpperCase().includes(stat.keywordNormalized));
+      return { ...distinct, targets: [...targets], keywordStat };
+    });
+  }, [records, fieldPath, validatedRows, keywordStats]);
 
   useEffect(() => {
     async function loadKnownSources() {
@@ -89,9 +65,7 @@ export default function Home() {
         const [projectsResponse, knowledgeBaseResponse] = await Promise.all([fetch('/api/projects'), fetch('/api/knowledge-base')]);
         const projects = (await projectsResponse.json()) as Array<{ sourceName?: string }>;
         const knowledgeBaseRows = (await knowledgeBaseResponse.json()) as Array<{ sourceName?: string }>;
-        setKnownSourceNames(
-          Array.from(new Set([...DEFAULT_SOURCE_NAMES, ...(projects.map((project) => project.sourceName).filter(Boolean) as string[]), ...(knowledgeBaseRows.map((row) => row.sourceName).filter(Boolean) as string[])])).sort((a, b) => a.localeCompare(b)),
-        );
+        setKnownSourceNames(Array.from(new Set([...DEFAULT_SOURCE_NAMES, ...projects.map((project) => project.sourceName).filter(Boolean) as string[], ...knowledgeBaseRows.map((row) => row.sourceName).filter(Boolean) as string[]])).sort());
       } catch {
         setKnownSourceNames(DEFAULT_SOURCE_NAMES);
       }
@@ -100,793 +74,199 @@ export default function Home() {
     loadKnownSources();
   }, []);
 
-  useEffect(() => {
-    async function loadTargetValues() {
-      try {
-        const selectedAttribute = targetAttributeName || fieldPath;
-        const params = selectedAttribute ? `?attributeName=${encodeURIComponent(selectedAttribute)}` : '';
-        const response = await fetch(`/api/target-values${params}`);
-        const values = (await response.json()) as string[];
-        setTargetValues((current) => Array.from(new Set([...current, ...values])).sort((a, b) => a.localeCompare(b)));
-      } catch {
-        setTargetValues((current) => current);
-      }
-    }
-
-    loadTargetValues();
-  }, [fieldPath, targetAttributeName]);
-
   async function handleUpload(file: File) {
-    const parsed = await parseSourceFile(file);
-    await loadRecords(parsed, sourceName.trim() || file.name);
+    const parsedRecords = await parseSourceFile(file);
+    setRecords(parsedRecords);
+    const parsedFields = flattenFieldPaths(parsedRecords);
+    const preferredField = parsedFields.find((field) => field.label === 'raw_data.name' || field.label === 'name' || field.label.includes('model_description')) ?? parsedFields[0];
+    setFieldPath(preferredField?.label ?? '');
+    if (!sourceName.trim()) setSourceName(file.name);
   }
 
   async function loadDemoData() {
     const response = await fetch('/samples/pimup-products.json');
-    const parsed = (await response.json()) as SourceRecord[];
-    await loadRecords(parsed, sourceName.trim() || 'pimup-products.json');
-  }
-
-  async function loadRecords(parsed: SourceRecord[], nextSourceName: string) {
-    setRecords(parsed);
-    setSourceName(nextSourceName);
-    setSaveMessage('');
-    const detectedFields = flattenFieldPaths(parsed);
-    const preferredField = detectedFields.find((field) => field.label === 'raw_data.name')?.label;
-    const defaultField = preferredField ?? detectedFields[0]?.label ?? '';
-    setFieldPath(defaultField);
-    const memory = await loadSuggestionMemory(defaultField, nextSourceName);
-    rebuildRows(parsed, defaultField, memory, nextSourceName);
-  }
-
-  async function loadSuggestionMemory(attributeName: string, nextSourceName = sourceName) {
-    try {
-      const params = new URLSearchParams({ attributeName });
-      if (nextSourceName) params.set('sourceName', nextSourceName);
-      const response = await fetch(`/api/suggestions?${params.toString()}`);
-      const memory = (await response.json()) as SuggestionMemoryEntry[];
-      setSuggestionMemory(memory);
-      setSourceMappingCount(memory.filter((entry) => entry.sourceName === nextSourceName).length);
-      return memory;
-    } catch {
-      setSourceMappingCount(0);
-      return suggestionMemory.length ? suggestionMemory : SEED_SUGGESTIONS;
-    }
-  }
-
-  function rebuildRows(nextRecords: SourceRecord[], nextFieldPath: string, memory = suggestionMemory, nextSourceName = sourceName) {
-    const distinct = getDistinctValues(nextRecords, nextFieldPath);
-    setRows(
-      distinct.map((item) => {
-        const suggestion = suggestMapping(item.value, nextFieldPath, memory, nextSourceName);
-        return {
-          ...item,
-          suggestion,
-          targetValue: suggestion.targetValue,
-          status: suggestion.targetValue ? 'suggested' : 'unmapped',
-        };
-      }),
-    );
-    setSelectedValues(new Set());
-  }
-
-  function updateTarget(sourceValue: string, targetValue: string, status: MappingRow['status'] = 'validated') {
-    setRows((current) => current.map((row) => (row.value === sourceValue ? { ...row, targetValue, status } : row)));
-    if (targetValue.trim()) setTargetValues((current) => Array.from(new Set([...current, targetValue.trim()])).sort((a, b) => a.localeCompare(b)));
-  }
-
-  function rejectSuggestion(sourceValue: string) {
-    setRows((current) => current.map((row) => (row.value === sourceValue ? { ...row, targetValue: '', status: 'unmapped' } : row)));
-  }
-
-  function applyBulk() {
-    if (!bulkTarget.trim()) return;
-    setRows((current) => current.map((row) => (selectedValues.has(row.value) ? { ...row, targetValue: bulkTarget, status: 'validated' } : row)));
-    setBulkTarget('');
-    setSelectedValues(new Set());
-  }
-
-  async function renameSource(nextSourceName: string) {
-    setSourceName(nextSourceName);
-    if (nextSourceName.trim()) setKnownSourceNames((current) => Array.from(new Set([...current, nextSourceName.trim()])).sort((a, b) => a.localeCompare(b)));
-    setManualMappingMessage('');
-    setSaveMessage('');
-    const memory = await loadSuggestionMemory(fieldPath, nextSourceName);
-    rebuildRows(records, fieldPath, memory, nextSourceName);
-  }
-
-  async function renameManualAttribute(nextAttributeName: string) {
-    setManualAttributeName(nextAttributeName);
-    setManualMappingMessage('');
-    const attributeForSuggestions = fieldPath || nextAttributeName;
-    if (attributeForSuggestions && sourceName.trim()) {
-      const memory = await loadSuggestionMemory(attributeForSuggestions, sourceName.trim());
-      rebuildRows(records, attributeForSuggestions, memory, sourceName.trim());
-    }
-  }
-
-  function applyManualMappings() {
-    if (containsSqlCaseSyntax(manualMappingsInput)) {
-      setManualMappingMessage('Le contenu semble être une règle SQL complète. Merci d’utiliser l’import SQL Parser ou de fournir un mapping one-to-one simple.');
-      return;
-    }
-
-    if (!sourceName.trim() || !manualAttributeName.trim()) {
-      setManualMappingMessage('Renseignez Source Name et Attribute Name pour associer ces mappings à une source et un attribut.');
-      return;
-    }
-
-    const manualMappings = parseManualMappings(manualMappingsInput, manualAttributeName.trim(), sourceName.trim());
-    if (!manualMappings.length) {
-      setManualMappingMessage('Aucun mapping valide détecté. Format attendu : valeur source => valeur cible.');
-      return;
-    }
-
-    const mergedMemory = dedupeSuggestionMemory([...manualMappings, ...suggestionMemory]);
-    const manualKnowledgeBaseRows = manualMappings.map((mapping) => ({
-      sourceName: mapping.sourceName,
-      attributeName: mapping.attributeName,
-      sourceValue: mapping.sourceValueNormalized,
-      targetValue: mapping.targetValue,
-      brand: brandName.trim() || undefined,
-      confidenceScore: 1,
-      status: 'detected' as const,
-    }));
-    setKnownSourceNames((current) => Array.from(new Set([...current, sourceName.trim()])).sort((a, b) => a.localeCompare(b)));
-    setKnowledgeBaseRows((current) => [...manualKnowledgeBaseRows, ...current]);
-    setTargetValues((current) => Array.from(new Set([...current, ...manualMappings.map((mapping) => mapping.targetValue)])).sort((a, b) => a.localeCompare(b)));
-    setSuggestionMemory(mergedMemory);
-    setSourceMappingCount(mergedMemory.filter((entry) => entry.sourceName === sourceName.trim()).length);
-    if (manualAttributeName.trim() === fieldPath) rebuildRows(records, fieldPath, mergedMemory, sourceName.trim());
-    setManualMappingMessage(`${manualMappings.length} mapping(s) associés à ${sourceName.trim()} / ${manualAttributeName.trim()}. Les suggestions futures de cette source seront prioritaires.`);
+    const blob = await response.blob();
+    await handleUpload(new File([blob], 'pimup-products.json', { type: 'application/json' }));
   }
 
   function previewSqlCaseMappings() {
-    if (!sourceName.trim() || !manualAttributeName.trim()) {
-      setSqlCaseMessage('Renseignez Source Name et Attribute Name avant de parser une règle SQL CASE.');
+    if (!sourceName.trim() || !attributeName.trim()) {
+      setParserMessage('Source Name et Attribute Name sont obligatoires avant de parser le SQL.');
       return;
     }
 
-    const preview = parseSqlCaseMappings(sqlCaseInput, sourceName.trim(), manualAttributeName.trim());
-    setSqlCasePreview(preview);
-    setSqlCaseMessage(preview.valid ? `${preview.valid} mapping(s) détectés depuis la règle SQL.` : 'Aucun mapping valide détecté dans la règle SQL.');
+    const preview = parseSqlCaseMappings(sqlCaseInput, sourceName.trim(), attributeName.trim());
+    const preparedRows = prepareMappingReviewRows(preview.mappings.map((mapping) => ({ ...mapping, brand: brandName.trim() || undefined })));
+    setSqlCasePreview({ ...preview, mappings: preparedRows, valid: preparedRows.filter((row) => row.status !== 'needs_context' && row.status !== 'rejected').length });
+    setReviewRows(preparedRows);
+    setParserMessage(preparedRows.length ? `${preparedRows.length} règle(s) détectée(s). Validez-les dans l’étape 4 avant export ou sauvegarde.` : 'Aucune règle SQL exploitable détectée.');
   }
 
-  function addSqlCaseMappingsToPreview() {
-    if (!sqlCasePreview?.mappings.length) {
-      setSqlCaseMessage('Aucun mapping SQL valide à ajouter.');
-      return;
-    }
-
-    const enrichedMappings = sqlCasePreview.mappings.map((mapping) => ({ ...mapping, brand: brandName.trim() || mapping.brand }));
-    setKnowledgeBaseRows((current) => [...enrichedMappings, ...current]);
-    setKnowledgeBasePreview(buildKnowledgeBasePreview([...enrichedMappings, ...knowledgeBaseRows]));
-    setTargetValues((current) => Array.from(new Set([...current, ...enrichedMappings.map((mapping) => mapping.targetValue)])).sort((a, b) => a.localeCompare(b)));
-    setSqlCaseMessage(`${sqlCasePreview.mappings.length} mapping(s) ajoutés à Mapping Review & Validation. Validez ou rejetez chaque ligne avant sauvegarde.`);
+  function updateReviewRow(index: number, patch: Partial<KnowledgeBaseMappingInput>) {
+    setReviewRows((current) => current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)));
   }
 
-  function dedupeSuggestionMemory(entries: SuggestionMemoryEntry[]) {
-    const seen = new Set<string>();
-    return entries.filter((entry) => {
-      const key = `${entry.sourceName ?? '*'}:${entry.attributeName}:${entry.sourceValueNormalized}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }
-
-  async function importKnowledgeBaseFile(file: File) {
-    try {
-      const importedRows = (await parseKnowledgeBaseFile(file)).map((row) => ({ ...row, status: row.status === 'rejected' ? 'rejected' as const : 'detected' as const }));
-      setKnowledgeBaseRows(importedRows);
-      const localPreview = buildKnowledgeBasePreview(importedRows);
-      setKnowledgeBasePreview(localPreview);
-      setKnowledgeBaseMessage('Preview générée. Corrigez les lignes si besoin puis sauvegardez.');
-
-      const response = await fetch('/api/knowledge-base/validate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mappings: importedRows }),
-      });
-      if (response.ok) setKnowledgeBasePreview((await response.json()) as KnowledgeBaseImportPreview);
-    } catch {
-      setKnowledgeBaseMessage('Impossible de lire ce fichier de mappings. Vérifiez le format CSV/JSON.');
-    }
-  }
-
-  function updateKnowledgeBaseRow(index: number, patch: Partial<KnowledgeBaseMappingInput>) {
-    setKnowledgeBaseRows((current) => {
-      const next = current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row));
-      setKnowledgeBasePreview(buildKnowledgeBasePreview(next));
-      return next;
-    });
-  }
-
-  async function saveKnowledgeBaseRows() {
-    const validRows = knowledgeBaseRows.filter((row) => row.attributeName && row.sourceValue && row.targetValue && row.status === 'validated');
+  async function saveValidatedRows() {
     const response = await fetch('/api/knowledge-base', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mappings: validRows.map((row) => ({ ...row, status: 'validated' })) }),
+      body: JSON.stringify({ mappings: validatedRows.map((row) => ({ ...row, status: 'validated' })) }),
     });
-    if (response.ok) {
-      const savedRows = (await response.json()) as KnowledgeBaseMappingInput[];
-      setKnowledgeBaseMessage(`${savedRows.length} mapping(s) sauvegardés dans mapping_knowledge_base.`);
-      setTargetValues((current) => Array.from(new Set([...current, ...savedRows.map((row) => row.targetValue)])).sort((a, b) => a.localeCompare(b)));
-      const memory = await loadSuggestionMemory(fieldPath, sourceName);
-      rebuildRows(records, fieldPath, memory, sourceName);
-    } else {
-      setKnowledgeBaseMessage('Erreur de sauvegarde dans mapping_knowledge_base. Vérifiez DATABASE_URL.');
-    }
-  }
-
-  async function addTargetValue() {
-    if (!newTargetValue.trim()) return;
-    const targetValue = newTargetValue.trim();
-    setTargetValues((current) => Array.from(new Set([...current, targetValue])).sort((a, b) => a.localeCompare(b)));
-    setNewTargetValue('');
-    await fetch('/api/target-values', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ attributeName: targetAttributeName || fieldPath || 'family', targetValue }),
-    });
+    setSaveMessage(response.ok ? `${validatedRows.length} règle(s) validée(s) sauvegardée(s).` : 'Sauvegarde impossible : vérifiez DATABASE_URL.');
   }
 
   function downloadExport() {
-    const scopedRows = validatedReviewRows.length ? validatedReviewRows : rules.map((rule) => ({
-      sourceName,
-      attributeName: fieldPath,
-      sourceValue: rule.sourceValue,
-      targetValue: rule.targetValue,
-      confidenceScore: rule.confidenceScore,
-      status: rule.status,
-    }));
-    const content = exportFormat === 'csv' ? exportKnowledgeBaseCsv(scopedRows) : exportFormat === 'json' ? exportKnowledgeBaseJson(scopedRows) : exportKnowledgeBaseSql(scopedRows, sourceExpression || fieldPath);
+    const content = exportFormat === 'csv' ? exportKnowledgeBaseCsv(validatedRows) : exportFormat === 'json' ? exportKnowledgeBaseJson(validatedRows) : exportKnowledgeBaseSql(validatedRows, sourceExpression || 'raw_data');
     const blob = new Blob([content], { type: exportFormat === 'json' ? 'application/json' : 'text/plain' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `pimup-mappings.${exportFormat}`;
+    link.download = `pimup-validated-rules.${exportFormat}`;
     link.click();
     URL.revokeObjectURL(url);
-  }
-
-  async function saveDraft() {
-    const response = await fetch('/api/projects', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: projectName,
-        sourceName,
-        attributeName: fieldPath,
-        rules,
-      }),
-    });
-    setSaveMessage(response.ok ? 'Mapping sauvegardé en draft PostgreSQL.' : 'Erreur de sauvegarde. Vérifiez DATABASE_URL.');
   }
 
   return (
     <main className="mx-auto max-w-7xl space-y-8 px-6 py-8">
       <header className="rounded-3xl bg-gradient-to-r from-pimup-900 to-pimup-500 p-8 text-white shadow-lg">
         <p className="text-sm font-semibold uppercase tracking-[0.3em] text-blue-100">PIMuP interne</p>
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-4">
-          <h1 className="text-4xl font-bold">PIMuP Mapping Assistant</h1>
-          <div className="flex gap-2">
-            <a href="/ai-training" className="rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/30 hover:bg-white/25">AI Training</a>
-            <a href="/target-values" className="rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/30 hover:bg-white/25">Target Values</a>
-          </div>
-        </div>
-        <p className="mt-3 max-w-3xl text-blue-50">
-          Import CSV/JSON, suggestions de mapping, génération SQL PostgreSQL/JSONB et validation humaine en mode draft.
-        </p>
+        <h1 className="mt-3 text-4xl font-bold">PIMuP Mapping Assistant</h1>
+        <p className="mt-3 max-w-3xl text-blue-50">Workflow simplifié : configuration source, upload data, parser SQL, validation humaine, coverage et export.</p>
       </header>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-2xl font-bold">1. Source & Attribute</h2>
-        <p className="mt-2 text-sm text-slate-500">Définissez le contexte avant d’uploader ou d’importer des mappings. Les suggestions futures priorisent cette source, cet attribut et ce chemin.</p>
+        <h2 className="text-2xl font-bold">1. Source Configuration</h2>
         <div className="mt-4 grid gap-4 md:grid-cols-5">
           <label className="text-sm font-semibold text-slate-700">Source Name
-            <input list="known-source-names" value={sourceName} onChange={(event) => renameSource(event.target.value)} placeholder="Nike B2B" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+            <input list="known-source-names" value={sourceName} onChange={(event) => setSourceName(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Puma B2B" />
           </label>
           <label className="text-sm font-semibold text-slate-700">Brand
-            <input value={brandName} onChange={(event) => setBrandName(event.target.value)} placeholder="Puma" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+            <input value={brandName} onChange={(event) => setBrandName(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Puma" />
           </label>
           <label className="text-sm font-semibold text-slate-700">Attribute Name
-            <input list="known-attribute-names" value={manualAttributeName} onChange={(event) => renameManualAttribute(event.target.value)} placeholder="family" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+            <input list="attribute-names" value={attributeName} onChange={(event) => setAttributeName(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="family" />
           </label>
           <label className="text-sm font-semibold text-slate-700">Source Path principal
-            <select value={fieldPath} onChange={async (event) => { setFieldPath(event.target.value); const memory = await loadSuggestionMemory(event.target.value, sourceName); rebuildRows(records, event.target.value, memory, sourceName); }} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
+            <select value={fieldPath} onChange={(event) => setFieldPath(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
               <option value="">Choisir après upload</option>
               {fields.map((field) => <option key={field.label} value={field.label}>{field.label}</option>)}
             </select>
           </label>
-          <label className="text-sm font-semibold text-slate-700">Type de mapping
-            <select value={mappingType} onChange={(event) => setMappingType(event.target.value as typeof mappingType)} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
-              <option value="one_to_one">One-to-one</option>
+          <label className="text-sm font-semibold text-slate-700">Mapping Type
+            <select value={mappingType} onChange={(event) => setMappingType(event.target.value as MappingRuleType)} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
               <option value="sql_case">SQL CASE</option>
               <option value="contextual">Contextual Rules</option>
+              <option value="one_to_one">One-to-one</option>
             </select>
           </label>
         </div>
+        <datalist id="known-source-names">{knownSourceNames.map((name) => <option key={name} value={name} />)}</datalist>
+        <datalist id="attribute-names">{attributeNames.map((name) => <option key={name} value={name} />)}</datalist>
+        <datalist id="target-values">{targetValues.map((value) => <option key={value} value={value} />)}</datalist>
       </section>
 
       <section className="grid gap-6 lg:grid-cols-[380px_1fr]">
-        <div className="space-y-6">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex items-center gap-3">
-              <FileJson className="text-pimup-700" />
-              <h2 className="text-xl font-semibold">2. Upload Data</h2>
-            </div>
-            <input
-              type="file"
-              accept=".csv,.json,application/json,text/csv"
-              onChange={(event) => event.target.files?.[0] && handleUpload(event.target.files[0])}
-              className="mt-5 w-full rounded-xl border border-dashed border-slate-300 p-4 text-sm"
-            />
-            <button
-              type="button"
-              onClick={loadDemoData}
-              className="mt-3 w-full rounded-xl border border-pimup-700 px-4 py-2 text-sm font-semibold text-pimup-700 hover:bg-pimup-50"
-            >
-              Charger les données de démo locales
-            </button>
-            <label className="mt-4 block text-sm font-medium text-slate-700" htmlFor="source-name">
-              Nom de la source / fournisseur
-            </label>
-            <input
-              id="source-name"
-              list="known-source-names"
-              value={sourceName}
-              onChange={(event) => renameSource(event.target.value)}
-              placeholder="Ex: supplier-running-2026.csv"
-              className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-2 text-sm focus:border-pimup-500"
-            />
-            <datalist id="known-source-names">
-              {knownSourceNames.map((knownSourceName) => (
-                <option key={knownSourceName} value={knownSourceName} />
-              ))}
-            </datalist>
-            <p className="mt-3 text-sm text-slate-500">{records.length} produits importés {sourceName && `depuis ${sourceName}`}.</p>
-            {sourceName && (
-              <p className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                {sourceMappingCount > 0
-                  ? `${sourceMappingCount} mappings existants détectés pour cette source et utilisés en priorité.`
-                  : 'Aucun mapping existant détecté pour cette source : les suggestions globales restent utilisées.'}
-              </p>
-            )}
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-xl font-semibold">Source Path à analyser</h2>
-            <select
-              value={fieldPath}
-              onChange={async (event) => {
-                setFieldPath(event.target.value);
-                const memory = await loadSuggestionMemory(event.target.value, sourceName);
-                rebuildRows(records, event.target.value, memory, sourceName);
-              }}
-              className="mt-4 w-full rounded-xl border border-slate-300 px-4 py-2"
-            >
-              {fields.map((field) => (
-                <option key={field.label} value={field.label}>
-                  {field.label} — {field.sqlExpression}
-                </option>
-              ))}
-            </select>
-            <p className="mt-3 text-xs text-slate-500">Expression SQL détectée : {sourceExpression || '—'}</p>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-xl font-semibold">3. Import Mapping Knowledge</h2>
-            <p className="mt-2 text-sm text-slate-500">
-              Ajoutez des mappings connus pour une source et un attribut. Ils seront associés à cette source puis utilisés en priorité dans les suggestions futures.
-            </p>
-            <div className="mt-4 grid gap-3">
-              <label className="block text-sm font-semibold text-slate-700" htmlFor="manual-source-name">
-                Source Name <span className="text-rose-600">*</span>
-              </label>
-              <input
-                id="manual-source-name"
-                list="known-source-names"
-                required
-                value={sourceName}
-                onChange={(event) => renameSource(event.target.value)}
-                className="w-full rounded-xl border border-slate-300 px-4 py-2 text-sm focus:border-pimup-500"
-                placeholder="Nike B2B, Puma B2B, Ekkia, Bihr..."
-              />
-              <label className="block text-sm font-semibold text-slate-700" htmlFor="manual-attribute-name">
-                Attribute Name <span className="text-rose-600">*</span>
-              </label>
-              <input
-                id="manual-attribute-name"
-                list="known-attribute-names"
-                required
-                value={manualAttributeName}
-                onChange={(event) => renameManualAttribute(event.target.value)}
-                className="w-full rounded-xl border border-slate-300 px-4 py-2 text-sm focus:border-pimup-500"
-                placeholder="family, size, color, season, gender, sport"
-              />
-              <datalist id="known-attribute-names">
-                {knownAttributeNames.map((attributeName) => (
-                  <option key={attributeName} value={attributeName} />
-                ))}
-              </datalist>
-            </div>
-            {!canAddManualMappings && (
-              <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                Source Name et Attribute Name sont obligatoires avant de pouvoir ajouter des mappings à la knowledge base locale.
-              </p>
-            )}
-            <textarea
-              value={manualMappingsInput}
-              onChange={(event) => setManualMappingsInput(event.target.value)}
-              rows={5}
-              className="mt-4 w-full rounded-xl border border-slate-300 px-4 py-3 text-sm font-mono focus:border-pimup-500"
-              placeholder={"SNAPBACK => Casquette snapback\nRUNNING => Running"}
-            />
-            {containsSqlCaseSyntax(manualMappingsInput) && (
-              <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
-                Le contenu semble être une règle SQL complète. Merci d’utiliser l’import SQL Parser ou de fournir un mapping one-to-one simple.
-              </p>
-            )}
-            <button
-              type="button"
-              onClick={applyManualMappings}
-              disabled={!canAddManualMappings || containsSqlCaseSyntax(manualMappingsInput)}
-              className="mt-3 w-full rounded-xl bg-pimup-700 px-4 py-2 font-semibold text-white hover:bg-pimup-800 disabled:bg-slate-300 disabled:text-slate-500"
-            >
-              Ajouter à cette source
-            </button>
-            {manualMappingMessage && <p className="mt-3 text-sm text-slate-600">{manualMappingMessage}</p>}
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-xl font-semibold">Import SQL CASE Parser</h2>
-            <p className="mt-2 text-sm text-slate-500">
-              Collez ici une règle SQL CASE WHEN complète. Les blocs WHEN/THEN supportés seront convertis en mappings avec source_path et matcher_type. Les ELSE CONCAT(...) sont ignorés.
-            </p>
-            <textarea
-              value={sqlCaseInput}
-              onChange={(event) => setSqlCaseInput(event.target.value)}
-              rows={6}
-              className="mt-4 w-full rounded-xl border border-slate-300 px-4 py-3 text-sm font-mono focus:border-pimup-500"
-              placeholder={"WHEN raw_data->'attributes'->'articletype'->0->>'value' = 'BB Caps'\nTHEN 'Casquette de baseball'"}
-            />
-            <div className="mt-3 flex gap-2">
-              <button type="button" onClick={previewSqlCaseMappings} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
-                Prévisualiser SQL
-              </button>
-              <button type="button" onClick={addSqlCaseMappingsToPreview} disabled={!sqlCasePreview?.mappings.length} className="rounded-xl bg-pimup-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-300">
-                Ajouter au preview
-              </button>
-            </div>
-            {sqlCaseMessage && <p className="mt-3 text-sm text-slate-600">{sqlCaseMessage}</p>}
-            {sqlCasePreview && (
-              <div className="mt-4 space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <StatCard label="Lignes détectées" value={sqlCasePreview.detected} />
-                  <StatCard label="Mappings valides" value={sqlCasePreview.valid} tone="success" />
-                  <StatCard label="Ignorés" value={sqlCasePreview.ignored} tone="warning" />
-                  <StatCard label="Erreurs" value={sqlCasePreview.errors.length} tone="warning" />
-                </div>
-                <div className="max-h-48 overflow-auto rounded-xl border border-slate-200">
-                  <table className="min-w-full text-xs">
-                    <thead className="bg-slate-50 text-left uppercase text-slate-500">
-                      <tr>
-                        <th className="px-3 py-2">Target Value</th>
-                        <th className="px-3 py-2">Conditions</th>
-                        <th className="px-3 py-2">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {sqlCasePreview.mappings.map((mapping, index) => (
-                        <tr key={`${mapping.sourcePath}-${mapping.sourceValue}-${index}`}>
-                          <td className="px-3 py-2">{mapping.targetValue}</td>
-                          <td className="px-3 py-2">{mapping.conditions?.map((condition) => `${condition.sourcePath} ${condition.operator} ${condition.value}`).join(' AND ') ?? mapping.sourceValue}</td>
-                          <td className="px-3 py-2">valid</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {(sqlCasePreview.debugCases.length > 0 || sqlCasePreview.errors.length > 0) && (
-                  <pre className="max-h-32 overflow-auto rounded-xl bg-slate-100 p-3 text-xs text-slate-700">{JSON.stringify({ ignored: sqlCasePreview.debugCases, errors: sqlCasePreview.errors }, null, 2)}</pre>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-xl font-semibold">Sauvegarde draft</h2>
-            <input value={projectName} onChange={(event) => setProjectName(event.target.value)} className="mt-4 w-full rounded-xl border border-slate-300 px-4 py-2" />
-            <button onClick={saveDraft} disabled={!records.length || !rules.length} className="mt-3 w-full rounded-xl bg-pimup-700 px-4 py-2 font-semibold text-white disabled:bg-slate-300">
-              Sauvegarder dans PostgreSQL
-            </button>
-            {saveMessage && <p className="mt-3 text-sm text-slate-600">{saveMessage}</p>}
-          </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center gap-3"><FileJson className="text-pimup-700" /><h2 className="text-2xl font-bold">2. Upload Data</h2></div>
+          <input type="file" accept=".csv,.json,application/json,text/csv" onChange={(event) => event.target.files?.[0] && handleUpload(event.target.files[0])} className="mt-5 w-full rounded-xl border border-dashed border-slate-300 p-4 text-sm" />
+          <button type="button" onClick={loadDemoData} className="mt-3 w-full rounded-xl border border-pimup-700 px-4 py-2 text-sm font-semibold text-pimup-700 hover:bg-pimup-50">Charger les données de démo locales</button>
+          <p className="mt-3 text-sm text-slate-500">{records.length} produit(s) importé(s). Source path actif : <strong>{fieldPath || '—'}</strong></p>
         </div>
-
-        <div className="space-y-6">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="mb-4 text-xl font-semibold">Typologies détectées</h2>
-            {detectedTypologies.length ? (
-              <div className="grid gap-3 md:grid-cols-2">
-                {detectedTypologies.map((typology) => (
-                  <div key={typology.label} className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="font-semibold text-emerald-900">{typology.label}</p>
-                      <span className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-emerald-700">
-                        {Math.round(typology.confidenceScore * 100)}%
-                      </span>
-                    </div>
-                    <p className="mt-2 text-xs text-emerald-700">Mots-clés : {typology.matchedKeywords.join(', ')}</p>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
-                Importez une source pour détecter les sports, thématiques ou familles typologiques potentielles.
-              </p>
-            )}
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="mb-4 text-xl font-semibold">Preview des 50 premières lignes</h2>
-            <pre className="max-h-96 overflow-auto rounded-xl bg-slate-950 p-4 text-xs text-slate-100">
-              {records.length ? JSON.stringify(records.slice(0, 50), null, 2) : 'Importez un fichier CSV ou JSON pour commencer.'}
-            </pre>
-          </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h3 className="font-semibold">Preview des 50 premières lignes</h3>
+          <pre className="mt-3 max-h-80 overflow-auto rounded-xl bg-slate-950 p-4 text-xs text-slate-100">{records.length ? JSON.stringify(records.slice(0, 50), null, 2) : 'Importez un fichier CSV ou JSON pour commencer.'}</pre>
         </div>
       </section>
 
-
-      <section className="grid gap-6 lg:grid-cols-[420px_1fr]">
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-xl font-semibold">Target Values</h2>
-          <p className="mt-2 text-sm text-slate-500">Gérez les valeurs cibles autorisées utilisées par le selector du tableau.</p>
-          <input
-            value={targetAttributeName}
-            onChange={(event) => setTargetAttributeName(event.target.value)}
-            className="mt-4 w-full rounded-xl border border-slate-300 px-4 py-2 text-sm"
-            placeholder="attribute_name ex: family"
-          />
-          <div className="mt-3 flex gap-2">
-            <input
-              value={newTargetValue}
-              onChange={(event) => setNewTargetValue(event.target.value)}
-              className="min-w-0 flex-1 rounded-xl border border-slate-300 px-4 py-2 text-sm"
-              placeholder="Nouvelle valeur cible"
-            />
-            <button type="button" onClick={addTargetValue} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
-              Ajouter
-            </button>
-          </div>
-          <div className="mt-4 flex max-h-52 flex-wrap gap-2 overflow-auto">
-            {targetValues.map((targetValue) => (
-              <span key={targetValue} className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
-                {targetValue}
-              </span>
-            ))}
-          </div>
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-2xl font-bold">3. SQL Parser</h2>
+        <p className="mt-2 text-sm text-slate-500">Collez une règle SQL CASE WHEN. Le bouton Prévisualiser SQL produit une liste visible de règles détectées, sans sauvegarde automatique.</p>
+        <textarea value={sqlCaseInput} onChange={(event) => setSqlCaseInput(event.target.value)} rows={10} className="mt-4 w-full rounded-xl border border-slate-300 px-4 py-3 font-mono text-sm focus:border-pimup-500" />
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button type="button" onClick={previewSqlCaseMappings} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Prévisualiser SQL</button>
+          {parserMessage && <p className="text-sm text-slate-600">{parserMessage}</p>}
         </div>
-
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-xl font-semibold">Import mappings one-to-one CSV/JSON</h2>
-          <p className="mt-2 text-sm text-slate-500">Colonnes obligatoires : source_value, target_value, attribute_name. Les colonnes source_name, family, sport, category, brand, gender, confidence_score et status sont optionnelles.</p>
-          <input
-            type="file"
-            accept=".csv,.json,application/json,text/csv"
-            onChange={(event) => event.target.files?.[0] && importKnowledgeBaseFile(event.target.files[0])}
-            className="mt-4 w-full rounded-xl border border-dashed border-slate-300 p-4 text-sm"
-          />
-          {knowledgeBasePreview && (
-            <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-6">
-              <StatCard label="Importées" value={knowledgeBasePreview.total} />
-              <StatCard label="Valides" value={knowledgeBasePreview.valid} tone="success" />
-              <StatCard label="Invalides" value={knowledgeBasePreview.invalid} tone="warning" />
-              <StatCard label="Doublons" value={knowledgeBasePreview.duplicates} tone="warning" />
-              <StatCard label="Existants" value={knowledgeBasePreview.existing} />
-              <StatCard label="Conflits" value={knowledgeBasePreview.conflicts.length} tone="warning" />
+        {sqlCasePreview && (
+          <div className="mt-5 space-y-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <StatCard label="Règles détectées" value={reviewSummary.detected} />
+              <StatCard label="Règles valides" value={reviewSummary.valid} tone="success" />
+              <StatCard label="Règles ambiguës" value={reviewSummary.ambiguous} tone="warning" />
+              <StatCard label="Règles rejetées" value={reviewSummary.rejected} tone="warning" />
             </div>
-          )}
-          {knowledgeBaseMessage && <p className="mt-3 text-sm text-slate-600">{knowledgeBaseMessage}</p>}
-            {knowledgeBasePreview && knowledgeBasePreview.conflicts.length > 0 && (
-              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
-                <h3 className="font-semibold text-amber-900">Conflits potentiels à arbitrer</h3>
-                <div className="mt-3 space-y-2">
-                  {knowledgeBasePreview.conflicts.slice(0, 8).map((conflict) => (
-                    <div key={`${conflict.index}-${conflict.sourceValue}`} className="grid gap-2 rounded-lg bg-white p-3 text-xs md:grid-cols-[1fr_180px]">
-                      <p>
-                        <strong>{conflict.sourceValue}</strong> / {conflict.attributeName} : existant <strong>{conflict.existingTargetValue}</strong>, import <strong>{conflict.importedTargetValue}</strong>
-                      </p>
-                      <select
-                        onChange={(event) => {
-                          if (event.target.value === 'keep') updateKnowledgeBaseRow(conflict.index, { targetValue: conflict.existingTargetValue, status: 'validated' });
-                          if (event.target.value === 'replace') updateKnowledgeBaseRow(conflict.index, { targetValue: conflict.importedTargetValue, status: 'validated' });
-                          if (event.target.value === 'exception') updateKnowledgeBaseRow(conflict.index, { sourceName: sourceName || knowledgeBaseRows[conflict.index]?.sourceName || 'source-exception', status: 'validated' });
-                          if (event.target.value === 'ignore') updateKnowledgeBaseRow(conflict.index, { status: 'rejected' });
-                        }}
-                        className="rounded border border-amber-200 px-2 py-1"
-                        defaultValue="keep"
-                      >
-                        <option value="keep">Garder l’existant</option>
-                        <option value="replace">Remplacer</option>
-                        <option value="exception">Créer une exception source</option>
-                        <option value="ignore">Ignorer</option>
-                      </select>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          {knowledgeBaseRows.length > 0 && (
-            <div className="mt-6 space-y-4">
-              <div>
-                <h2 className="text-2xl font-bold">4. Mapping Review & Validation</h2>
-                <p className="text-sm text-slate-500">Aucun import SQL n’est sauvegardé automatiquement : validez, rejetez, modifiez ou ignorez chaque mapping avant knowledge base.</p>
-              </div>
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
-                <StatCard label="Validées" value={reviewCounts.validated} tone="success" />
-                <StatCard label="Rejetées" value={reviewCounts.rejected} tone="warning" />
-                <StatCard label="Ignorées" value={reviewCounts.ignored} />
-                <StatCard label="Needs context" value={reviewCounts.needsContext} tone="warning" />
-                <StatCard label="Règles incluses" value={validatedReviewRows.length || rules.length} />
-                <StatCard label="Mots-clés scorés" value={keywordStats.length} />
-              </div>
-            <div className="max-h-96 overflow-auto rounded-xl border border-slate-200">
+            <div className="max-h-72 overflow-auto rounded-xl border border-slate-200">
               <table className="min-w-full text-xs">
-                <thead className="sticky top-0 bg-slate-50 text-left uppercase text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2">Status</th>
-                    <th className="px-3 py-2">Conditions</th>
-                    <th className="px-3 py-2">Keyword</th>
-                    <th className="px-3 py-2">Target proposée</th>
-                    <th className="px-3 py-2">Score</th>
-                    <th className="px-3 py-2">Raison</th>
-                    <th className="px-3 py-2">Actions</th>
-                  </tr>
-                </thead>
+                <thead className="bg-slate-50 text-left uppercase text-slate-500"><tr><th className="px-3 py-2">Conditions détectées</th><th className="px-3 py-2">Target value</th><th className="px-3 py-2">Score</th><th className="px-3 py-2">Raison</th><th className="px-3 py-2">Needs Context</th></tr></thead>
                 <tbody className="divide-y divide-slate-100">
-                  {knowledgeBaseRows.slice(0, 80).map((row, index) => {
-                    const keywordStat = keywordStats.find((stat) => stat.keywordNormalized === row.sourceValue.toUpperCase() || row.sourceValue.toUpperCase().includes(stat.keywordNormalized));
-                    const conditionLabel = row.conditions?.length ? conditionsToHumanLabel(row.conditions) : row.sourcePath ? `${row.sourcePath} ${row.matcherType ?? 'exact'} ${row.sourceValue}` : row.sourceValue;
-                    return (
-                      <tr key={`${row.sourceName}-${row.attributeName}-${row.sourceValue}-${index}`}>
-                        <td className="px-3 py-2">
-                          <select value={row.status ?? 'detected'} onChange={(event) => updateKnowledgeBaseRow(index, { status: event.target.value as KnowledgeBaseMappingInput['status'] })} className="rounded border border-slate-200 px-2 py-1">
-                            <option value="detected">detected</option>
-                            <option value="suggested">suggested</option>
-                            <option value="validated">validated</option>
-                            <option value="rejected">rejected</option>
-                            <option value="ignored">ignored</option>
-                            <option value="conflict">conflict</option>
-                            <option value="needs_context">needs_context</option>
-                          </select>
-                        </td>
-                        <td className="min-w-64 px-3 py-2 text-slate-700">{conditionLabel}</td>
-                        <td className="px-3 py-2"><input value={row.sourceValue} onChange={(event) => updateKnowledgeBaseRow(index, { sourceValue: event.target.value })} className="w-48 rounded border border-slate-200 px-2 py-1" /></td>
-                        <td className="px-3 py-2"><input list="target-values" value={row.targetValue} onChange={(event) => updateKnowledgeBaseRow(index, { targetValue: event.target.value, status: 'suggested' })} className="w-52 rounded border border-slate-200 px-2 py-1" /></td>
-                        <td className="px-3 py-2">{Math.round((keywordStat?.confidenceScore ?? row.confidenceScore ?? 0.75) * 100)}%</td>
-                        <td className="min-w-48 px-3 py-2 text-slate-500">{keywordStat?.reason ?? (row.conditions?.length ? 'Règle contextuelle détectée depuis SQL CASE.' : 'Mapping one-to-one détecté.')}</td>
-                        <td className="px-3 py-2">
-                          <div className="flex flex-wrap gap-1">
-                            <button type="button" onClick={() => updateKnowledgeBaseRow(index, { status: 'validated' })} className="rounded bg-emerald-100 px-2 py-1 font-semibold text-emerald-700">Valider</button>
-                            <button type="button" onClick={() => updateKnowledgeBaseRow(index, { status: 'rejected' })} className="rounded bg-rose-100 px-2 py-1 font-semibold text-rose-700">Rejeter</button>
-                            <button type="button" onClick={() => updateKnowledgeBaseRow(index, { status: 'ignored' })} className="rounded bg-slate-100 px-2 py-1 font-semibold text-slate-600">Ignorer</button>
-                            <button type="button" onClick={() => updateKnowledgeBaseRow(index, { status: 'needs_context', ruleType: 'contextual' })} className="rounded bg-amber-100 px-2 py-1 font-semibold text-amber-700">Contextuel</button>
-                            <button type="button" onClick={() => updateKnowledgeBaseRow(index, { status: 'rejected', rejectionCount: (row.rejectionCount ?? 0) + 1, reason: 'never_suggest' })} className="rounded bg-rose-50 px-2 py-1 font-semibold text-rose-800">Ne jamais reproposer</button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {reviewRows.map((row, index) => (
+                    <tr key={`${row.sourceValue}-${row.targetValue}-${index}`}>
+                      <td className="px-3 py-2">{row.conditions?.length ? conditionsToHumanLabel(row.conditions) : row.sourceValue}</td>
+                      <td className="px-3 py-2 font-semibold">{row.targetValue}</td>
+                      <td className="px-3 py-2">{Math.round((row.confidenceScore ?? 0) * 100)}%</td>
+                      <td className="px-3 py-2 text-slate-500">{row.reason}</td>
+                      <td className="px-3 py-2">{row.status === 'needs_context' ? 'Oui' : 'Non'}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
-            </div>
-          )}
-          <div className="mt-6">
-            <h2 className="text-2xl font-bold">8. Save / Export</h2>
-            <p className="mt-1 text-sm text-slate-500">Seuls les mappings validés sont sauvegardés ou exportés.</p>
-          </div>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button type="button" onClick={saveKnowledgeBaseRows} disabled={!validatedReviewRows.length} className="rounded-xl bg-pimup-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-300">
-              Sauvegarder dans mapping_knowledge_base
-            </button>
-            <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as 'csv' | 'json' | 'sql')} className="rounded-xl border border-slate-300 px-3 py-2 text-sm">
-              <option value="csv">Export CSV</option>
-              <option value="json">Export JSON</option>
-              <option value="sql">Export SQL CASE WHEN</option>
-            </select>
-            <button type="button" onClick={downloadExport} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">
-              Télécharger
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <section className="space-y-4">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h2 className="text-2xl font-bold">5. Distinct Values Coverage</h2>
-            <p className="text-slate-500">Coverage après validation, mappings trouvés/manquants, rating des mots-clés et suggestions IA.</p>
-          </div>
-          <div className="flex gap-2">
-            <input value={bulkTarget} onChange={(event) => setBulkTarget(event.target.value)} placeholder="Valeur cible bulk" className="rounded-xl border border-slate-300 px-4 py-2" />
-            <button onClick={applyBulk} className="rounded-xl bg-slate-900 px-4 py-2 font-semibold text-white">Mapper sélection</button>
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-6">
-          <StatCard label="Total produits" value={coverageAfterValidation.total} />
-          <StatCard label="Couverts validés" value={coverageAfterValidation.matched} tone="success" />
-          <StatCard label="Non couverts" value={coverageAfterValidation.unmatched} tone="warning" />
-          <StatCard label="Règles validées" value={reviewCounts.validated} />
-          <StatCard label="Rejetées" value={reviewCounts.rejected} tone="warning" />
-          <StatCard label="Contexte requis" value={reviewCounts.needsContext} tone="warning" />
-        </div>
-        {keywordStats.length > 0 && (
-          <div className="overflow-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <table className="min-w-full text-xs">
-              <thead className="bg-slate-50 text-left uppercase text-slate-500"><tr><th className="px-3 py-2">Keyword</th><th className="px-3 py-2">Validé/Rejeté</th><th className="px-3 py-2">Score</th><th className="px-3 py-2">Sources</th><th className="px-3 py-2">Targets connues</th><th className="px-3 py-2">Fiabilité</th></tr></thead>
-              <tbody className="divide-y divide-slate-100">
-                {keywordStats.slice(0, 12).map((stat) => (
-                  <tr key={`${stat.attributeName}-${stat.keywordNormalized}`}>
-                    <td className="px-3 py-2 font-semibold">{stat.keyword}</td>
-                    <td className="px-3 py-2">{stat.validationCount} / {stat.rejectionCount}</td>
-                    <td className="px-3 py-2">{Math.round(stat.confidenceScore * 100)}%</td>
-                    <td className="px-3 py-2">{stat.sourceCount}</td>
-                    <td className="px-3 py-2">{stat.targets.map((target) => `${target.targetValue}: ${target.count}`).join(' · ')}</td>
-                    <td className="px-3 py-2">{stat.reliability === 'context_required' ? 'Mot-clé contextuel : nécessite une condition parent.' : stat.reliability}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {(sqlCasePreview.debugCases.length > 0 || sqlCasePreview.errors.length > 0) && <pre className="max-h-32 overflow-auto rounded-xl bg-slate-100 p-3 text-xs">{JSON.stringify({ ignored: sqlCasePreview.debugCases, errors: sqlCasePreview.errors }, null, 2)}</pre>}
           </div>
         )}
-        <MappingTable
-          rows={rows}
-          query={query}
-          selectedValues={selectedValues}
-          targetValues={targetValues}
-          onQueryChange={setQuery}
-          onToggle={(value) => setSelectedValues((current) => {
-            const next = new Set(current);
-            next.has(value) ? next.delete(value) : next.add(value);
-            return next;
-          })}
-          onTargetChange={updateTarget}
-          onRejectSuggestion={rejectSuggestion}
-        />
       </section>
 
-      <section className="grid gap-6 lg:grid-cols-2">
-        <div className="space-y-4">
-          <div className="flex items-center gap-3">
-            <Sparkles className="text-pimup-700" />
-            <h2 className="text-2xl font-bold">6. Rule Builder</h2>
-          </div>
-          <p className="text-sm text-slate-500">{validatedReviewRows.length || rules.length} règle(s) incluses. Les mappings rejetés ou ignorés ne sont pas générés.</p>
-          <SqlPreview sql={generatedRule.sql} />
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-2xl font-bold">4. Mapping Review & Validation</h2>
+        <p className="mt-2 text-sm text-slate-500">Validez les règles avant de les ajouter au projet. Les règles rejetées ne seront ni testées ni exportées.</p>
+        <div className="mt-4 max-h-96 overflow-auto rounded-xl border border-slate-200">
+          <table className="min-w-full text-xs">
+            <thead className="sticky top-0 bg-slate-50 text-left uppercase text-slate-500"><tr><th className="px-3 py-2">Status</th><th className="px-3 py-2">Conditions</th><th className="px-3 py-2">Target value</th><th className="px-3 py-2">Business score</th><th className="px-3 py-2">Validation / Rejection / Sources</th><th className="px-3 py-2">Needs Context</th><th className="px-3 py-2">Actions</th></tr></thead>
+            <tbody className="divide-y divide-slate-100">
+              {reviewRows.length ? reviewRows.map((row, index) => (
+                <tr key={`${row.sourceValue}-${index}`}>
+                  <td className="px-3 py-2"><span className="rounded-full bg-slate-100 px-2 py-1 font-semibold text-slate-700">{row.status}</span></td>
+                  <td className="min-w-72 px-3 py-2">{row.conditions?.length ? conditionsToHumanLabel(row.conditions) : row.sourceValue}</td>
+                  <td className="px-3 py-2"><input list="target-values" value={row.targetValue} onChange={(event) => updateReviewRow(index, { targetValue: event.target.value, status: 'suggested' })} className="w-56 rounded border border-slate-200 px-2 py-1" /></td>
+                  <td className="px-3 py-2">{Math.round((row.confidenceScore ?? 0) * 100)}%</td>
+                  <td className="px-3 py-2">{row.validationCount ?? 0} / {row.rejectionCount ?? 0} / {row.sourceCount ?? 1}</td>
+                  <td className="px-3 py-2">{row.status === 'needs_context' ? 'Oui — contexte obligatoire' : 'Non'}</td>
+                  <td className="px-3 py-2"><div className="flex flex-wrap gap-1"><button type="button" onClick={() => updateReviewRow(index, { status: 'validated', validationCount: (row.validationCount ?? 0) + 1 })} className="rounded bg-emerald-100 px-2 py-1 font-semibold text-emerald-700">Accepter</button><button type="button" onClick={() => updateReviewRow(index, { status: 'suggested' })} className="rounded bg-blue-100 px-2 py-1 font-semibold text-blue-700">Modifier</button><button type="button" onClick={() => updateReviewRow(index, { status: 'rejected', rejectionCount: (row.rejectionCount ?? 0) + 1 })} className="rounded bg-rose-100 px-2 py-1 font-semibold text-rose-700">Rejeter</button></div></td>
+                </tr>
+              )) : <tr><td colSpan={7} className="px-3 py-8 text-center text-slate-500">Aucune règle détectée. Utilisez l’étape 3 pour prévisualiser un SQL CASE.</td></tr>}
+            </tbody>
+          </table>
         </div>
-        <div className="space-y-4">
-          <div className="flex items-center gap-3">
-            <Database className="text-pimup-700" />
-            <h2 className="text-2xl font-bold">7. Rule Tester</h2>
+      </section>
+
+      <section className="space-y-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-2xl font-bold">5. Coverage & Export</h2>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
+          <StatCard label="Total produits" value={testResult.total} />
+          <StatCard label="Produits couverts" value={testResult.matched} tone="success" />
+          <StatCard label="Non couverts" value={testResult.unmatched} tone="warning" />
+          <StatCard label="Coverage" value={`${Math.round(testResult.coverage * 100)}%`} />
+          <StatCard label="Règles validées" value={validatedRows.length} />
+          <StatCard label="Conflits" value={testResult.conflicts.length} tone="warning" />
+        </div>
+        {keywordStats.length > 0 && (
+          <div className="overflow-auto rounded-xl border border-slate-200">
+            <table className="min-w-full text-xs"><thead className="bg-slate-50 text-left uppercase text-slate-500"><tr><th className="px-3 py-2">Keyword</th><th className="px-3 py-2">Validé/Rejeté</th><th className="px-3 py-2">Sources</th><th className="px-3 py-2">Confidence</th><th className="px-3 py-2">Targets connues</th><th className="px-3 py-2">Needs Context</th></tr></thead><tbody className="divide-y divide-slate-100">{keywordStats.map((stat) => <tr key={`${stat.attributeName}-${stat.keywordNormalized}`}><td className="px-3 py-2 font-semibold">{stat.keyword}</td><td className="px-3 py-2">{stat.validationCount} / {stat.rejectionCount}</td><td className="px-3 py-2">{stat.sourceCount}</td><td className="px-3 py-2">{Math.round(stat.confidenceScore * 100)}%</td><td className="px-3 py-2">{stat.targets.map((target) => `${target.targetValue}: ${target.count}`).join(' · ')}</td><td className="px-3 py-2">{stat.reliability === 'context_required' ? 'Oui' : 'Non'}</td></tr>)}</tbody></table>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <StatCard label="Total produits" value={testResult.total} />
-            <StatCard label="Produits matchés" value={testResult.matched} tone="success" />
-            <StatCard label="Non matchés" value={testResult.unmatched} tone="warning" />
-            <StatCard label="Couverture" value={`${Math.round(testResult.coverage * 100)}%`} />
+        )}
+        {coverageRows.length > 0 && (
+          <div className="overflow-auto rounded-xl border border-slate-200">
+            <table className="min-w-full text-xs"><thead className="bg-slate-50 text-left uppercase text-slate-500"><tr><th className="px-3 py-2">Valeur distincte</th><th className="px-3 py-2">Count</th><th className="px-3 py-2">Mapping trouvé</th><th className="px-3 py-2">Rating keyword</th></tr></thead><tbody className="divide-y divide-slate-100">{coverageRows.map((row) => <tr key={row.value}><td className="px-3 py-2 font-semibold">{row.value || '(vide)'}</td><td className="px-3 py-2">{row.count}</td><td className="px-3 py-2">{row.targets.length ? row.targets.join(', ') : 'Mapping manquant'}</td><td className="px-3 py-2">{row.keywordStat ? `${Math.round(row.keywordStat.confidenceScore * 100)}% · ${row.keywordStat.reliability}` : '—'}</td></tr>)}</tbody></table>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <h3 className="font-semibold">Conflits potentiels : {testResult.conflicts.length}</h3>
-            <pre className="mt-3 max-h-48 overflow-auto rounded-xl bg-slate-100 p-3 text-xs">{JSON.stringify(testResult.conflicts.slice(0, 5), null, 2)}</pre>
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <h3 className="font-semibold">Exemples non matchés</h3>
-            <pre className="mt-3 max-h-48 overflow-auto rounded-xl bg-slate-100 p-3 text-xs">{JSON.stringify(testResult.unmatchedExamples, null, 2)}</pre>
-          </div>
+        )}
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div className="space-y-3"><div className="flex items-center gap-2"><Sparkles className="text-pimup-700" /><h3 className="text-xl font-semibold">Rule Builder</h3></div><p className="text-sm text-slate-500">SQL généré uniquement à partir des règles validées.</p><SqlPreview sql={generatedSql} /></div>
+          <div className="space-y-3"><div className="flex items-center gap-2"><Database className="text-pimup-700" /><h3 className="text-xl font-semibold">Rule Tester</h3></div><pre className="max-h-72 overflow-auto rounded-xl bg-slate-100 p-3 text-xs">{JSON.stringify({ conflicts: testResult.conflicts.slice(0, 5), unmatchedExamples: testResult.unmatchedExamples, examplesByTarget: testResult.examplesByTarget }, null, 2)}</pre></div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={saveValidatedRows} disabled={!validatedRows.length} className="rounded-xl bg-pimup-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-300">Sauvegarder les règles validées</button>
+          <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as 'csv' | 'json' | 'sql')} className="rounded-xl border border-slate-300 px-3 py-2 text-sm"><option value="sql">Export SQL CASE WHEN</option><option value="csv">Export CSV</option><option value="json">Export JSON</option></select>
+          <button type="button" onClick={downloadExport} disabled={!validatedRows.length} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:text-slate-300">Télécharger</button>
+          {saveMessage && <p className="text-sm text-slate-600">{saveMessage}</p>}
         </div>
       </section>
     </main>

@@ -288,3 +288,17 @@ Ces lignes sont un vrai conflit :
 model_category = Pants AND model_description ~* Chino => Pantalon chino
 model_category = Pants AND model_description ~* Chino => Short chino
 ```
+
+## Workflow simplifié en 5 étapes
+
+L’interface principale est temporairement recentrée sur le workflow SQL le plus important :
+
+1. **Source Configuration** : `Source Name`, `Brand`, `Attribute Name`, `Source Path principal`, et type de mapping.
+2. **Upload Data** : import CSV/JSON produit et preview des 50 premières lignes.
+3. **SQL Parser** : collage d’un SQL `CASE WHEN`, puis bouton **Prévisualiser SQL** pour afficher immédiatement les règles détectées.
+4. **Mapping Review & Validation** : chaque règle affiche conditions détectées, target value, score métier, raison, `Needs Context`, et actions **Accepter / Modifier / Rejeter**.
+5. **Coverage & Export** : Rule Builder, Rule Tester, couverture produit et exports CSV/JSON/SQL utilisent uniquement les règles en statut `validated`.
+
+Les sections secondaires **Target Values**, **Import Mappings**, **Draft Save**, **AI Dashboard** et **Knowledge Base Explorer** sont volontairement masquées du workflow principal pour clarifier l’expérience SQL. Les routes/pages techniques restent disponibles dans le code pour une réactivation ultérieure.
+
+Le score métier affiché dans la review combine les compteurs de validation/rejet, le nombre de sources et le contexte détecté. Une règle ambiguë comme `CHINO` seule passe en **Needs Context**, tandis que `model_category=Pants AND model_description~*Chino` et `model_category=Shorts AND model_description~*Chino` restent deux règles contextuelles valides distinctes.

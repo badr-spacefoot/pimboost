@@ -9,6 +9,7 @@ import { parseManualMappings, detectSourceTypologies } from '@/lib/mapping/sourc
 import { suggestMapping } from '@/lib/mapping/suggestions';
 import { testRules } from '@/lib/mapping/tester';
 import { buildKeywordStats, keywordNeedsContext } from '@/lib/mapping/keyword-stats';
+import { mappingReviewSummary, prepareMappingReviewRows } from '@/lib/mapping/mapping-review';
 import { generateSqlFromKnowledgeRows, testKnowledgeRows, validatedKnowledgeRows } from '@/lib/mapping/rule-execution';
 import type { MappingRuleInput } from '@/lib/types/mapping';
 
@@ -400,5 +401,48 @@ describe('mapping review validation flow', () => {
     }));
 
     expect(validatedKnowledgeRows(reviewRows)).toHaveLength(1);
+  });
+});
+
+describe('simplified SQL workflow review', () => {
+  it('prepares SQL parser rows as detected review rules with business scores', () => {
+    const preview = parseSqlCaseMappings(`CASE
+      WHEN raw_data->>'model_category' = 'Pants' THEN CASE WHEN raw_data->>'model_description' ~* 'Chino' THEN 'Pantalon chino' END
+      WHEN raw_data->>'model_category' = 'Shorts' THEN CASE WHEN raw_data->>'model_description' ~* 'Chino' THEN 'Short chino' END
+    END`, 'Puma B2B', 'family');
+    const rows = prepareMappingReviewRows(preview.mappings);
+    const summary = mappingReviewSummary(rows);
+
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.status === 'detected')).toBe(true);
+    expect(rows.every((row) => (row.confidenceScore ?? 0) > 0.9)).toBe(true);
+    expect(summary).toEqual({ detected: 2, valid: 2, ambiguous: 0, rejected: 0 });
+  });
+
+  it('marks CHINO alone as needs_context when it has multiple targets', () => {
+    const rows = prepareMappingReviewRows([
+      { sourceName: 'Puma B2B', attributeName: 'family', sourceValue: 'raw_data.model_description ~* Chino', targetValue: 'Pantalon chino', matcherType: 'regex', ruleType: 'contextual', conditions: [{ sourcePath: 'raw_data.model_description', operator: '~*', value: 'Chino' }] },
+      { sourceName: 'Puma B2B', attributeName: 'family', sourceValue: 'raw_data.model_description ~* Chino', targetValue: 'Short chino', matcherType: 'regex', ruleType: 'contextual', conditions: [{ sourcePath: 'raw_data.model_description', operator: '~*', value: 'Chino' }] },
+    ]);
+
+    expect(rows.every((row) => row.status === 'needs_context')).toBe(true);
+    expect(mappingReviewSummary(rows).ambiguous).toBe(2);
+  });
+
+  it('keeps Rule Builder and Rule Tester scoped to accepted rules only', () => {
+    const rows = prepareMappingReviewRows(parseSqlCaseMappings(`CASE
+      WHEN raw_data->>'model_category' = 'Pants' THEN CASE WHEN raw_data->>'model_description' ~* 'Chino' THEN 'Pantalon chino' END
+      WHEN raw_data->>'model_category' = 'Shorts' THEN CASE WHEN raw_data->>'model_description' ~* 'Chino' THEN 'Short chino' END
+    END`, 'Puma B2B', 'family').mappings).map((row, index) => ({ ...row, status: index === 0 ? 'validated' as const : 'rejected' as const }));
+
+    const sql = generateSqlFromKnowledgeRows(rows, "raw_data->>'model_description'");
+    const result = testKnowledgeRows([
+      { raw_data: { model_category: 'Pants', model_description: 'Slim chino pant' } },
+      { raw_data: { model_category: 'Shorts', model_description: 'Chino bermuda' } },
+    ], rows, 'raw_data.model_description');
+
+    expect(sql).toContain('Pantalon chino');
+    expect(sql).not.toContain('Short chino');
+    expect(result.matched).toBe(1);
   });
 });

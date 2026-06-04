@@ -91,6 +91,7 @@ export interface KnowledgeBaseMappingInput {
   status?: MappingStatus | 'draft';
   validationCount?: number;
   rejectionCount?: number;
+  sourceCount?: number;
   reason?: string;
 }
 
@@ -168,6 +169,7 @@ export interface TrainingExampleInput {
   status?: MappingStatus | 'draft';
   validationCount?: number;
   rejectionCount?: number;
+  sourceCount?: number;
   reason?: string;
 }
 
